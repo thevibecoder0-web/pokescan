@@ -7,28 +7,53 @@ interface ManualSearchProps {
   onAddCard: (card: PokemonCard) => void;
 }
 
+const FEATURED_CARDS = [
+  { 
+    name: "Charizard", 
+    detail: "Base Set 4/102", 
+    image: "https://images.pokemontcg.io/base1/4_hires.png" 
+  },
+  { 
+    name: "Umbreon VMAX", 
+    detail: "Evolving Skies 215/203", 
+    image: "https://images.pokemontcg.io/swsh7/215_hires.png" 
+  },
+  { 
+    name: "Giratina V", 
+    detail: "Lost Origin 186/196", 
+    image: "https://images.pokemontcg.io/swsh11/186_hires.png" 
+  },
+  { 
+    name: "Rayquaza VMAX", 
+    detail: "Evolving Skies 218/203", 
+    image: "https://images.pokemontcg.io/swsh7/218_hires.png" 
+  },
+  { 
+    name: "Gengar VMAX", 
+    detail: "Fusion Strike 271/264", 
+    image: "https://images.pokemontcg.io/swsh8/271_hires.png" 
+  }
+];
+
 const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PokemonCard | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-
+  const performLookup = async (searchQuery: string) => {
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
-      const data = await manualCardLookup(query);
+      const data = await manualCardLookup(searchQuery);
       if (data && data.name) {
         const newCard: PokemonCard = {
           id: Math.random().toString(36).substr(2, 9),
           ...data,
           scanDate: new Date().toLocaleDateString(),
-          imageUrl: data.imageUrl || `https://picsum.photos/seed/${encodeURIComponent(data.name + data.number)}/400/600`
+          imageUrl: data.imageUrl || `https://placehold.co/400x560/1e293b/white?text=${encodeURIComponent(data.name)}`
         };
         setResult(newCard);
       } else {
@@ -41,14 +66,20 @@ const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
     }
   };
 
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+    performLookup(query);
+  };
+
   return (
-    <div className="w-full max-w-2xl mx-auto space-y-6">
+    <div className="w-full max-w-4xl mx-auto space-y-12 pb-12">
+      {/* Search Bar Container */}
       <div className="bg-slate-900/80 backdrop-blur-2xl border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl relative overflow-hidden">
-        {/* Tech Accents */}
         <div className="absolute top-0 right-0 w-32 h-32 bg-red-600/5 blur-[80px] rounded-full" />
         
         <h2 className="text-3xl font-orbitron font-bold mb-2 tracking-tighter">DATA LOOKUP</h2>
-        <p className="text-slate-400 text-sm mb-8 font-medium">Query the global TCG database via AI grounding.</p>
+        <p className="text-slate-400 text-sm mb-8 font-medium uppercase tracking-[0.1em]">Synchronize with global TCG database</p>
         
         <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-4 relative z-10">
           <div className="flex-1 relative">
@@ -72,7 +103,7 @@ const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
                 Searching...
               </>
             ) : (
-              "Run Scan"
+              "Query Database"
             )}
           </button>
         </form>
@@ -85,10 +116,48 @@ const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
         )}
       </div>
 
+      {/* Featured Targets: Binder Aesthetic */}
+      <div className="space-y-6">
+        <div className="flex items-center gap-4 px-2">
+           <h3 className="text-[10px] font-orbitron font-bold text-slate-500 uppercase tracking-[0.4em] whitespace-nowrap">High-Value Database Targets</h3>
+           <div className="h-px bg-slate-800 flex-1" />
+        </div>
+        
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+          {FEATURED_CARDS.map((card) => (
+            <button
+              key={card.name}
+              onClick={() => performLookup(`${card.name} ${card.detail}`)}
+              disabled={loading}
+              className="group flex flex-col bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg hover:shadow-red-500/40 transition-all duration-500 transform hover:-translate-y-2 text-center disabled:opacity-50 disabled:translate-y-0"
+            >
+              <div className="relative aspect-[2.5/3.5] bg-slate-950 overflow-hidden flex items-center justify-center border-b border-slate-800/50">
+                <img 
+                  src={card.image} 
+                  alt={card.name} 
+                  className="w-full h-full object-contain transition-transform duration-700 group-hover:scale-110" 
+                  onError={(e) => (e.target as HTMLImageElement).src = 'https://placehold.co/400x560/1e293b/white?text=Target'}
+                />
+                <div className="absolute inset-0 bg-red-600/0 group-hover:bg-red-600/5 transition-colors duration-500" />
+              </div>
+              <div className="p-3 bg-slate-900 flex flex-col items-center">
+                <span className="font-orbitron font-bold text-white text-[9px] truncate uppercase tracking-widest w-full">
+                  {card.name}
+                </span>
+                <span className="text-[7px] text-slate-500 uppercase tracking-tighter mt-1 truncate w-full">
+                  {card.detail}
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Search Result Overlay/Section */}
       {result && (
         <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
           <div className="flex flex-col md:flex-row bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
-            <div className="w-full md:w-[40%] aspect-[2.5/3.5] bg-slate-950 relative border-r border-slate-800/50">
+            <div className="w-full md:w-[40%] aspect-[2.5/3.5] bg-slate-950 relative border-r border-slate-800/50 flex items-center justify-center">
               <img src={result.imageUrl} alt={result.name} className="w-full h-full object-contain" />
               <div className="absolute top-4 left-4 flex gap-2">
                 <span className="bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full shadow-lg tracking-widest">FOUND</span>
@@ -123,7 +192,7 @@ const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
                    </div>
                    <div className="flex justify-between text-xs font-bold">
                      <span className="text-slate-500 uppercase tracking-widest">Health Points</span>
-                     <span className="text-slate-200">{result.hp}</span>
+                     <span className="text-slate-200">{result.hp || "N/A"}</span>
                    </div>
                 </div>
               </div>
