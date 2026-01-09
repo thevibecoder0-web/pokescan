@@ -1,214 +1,235 @@
 
-import React, { useState } from 'react';
-import { manualCardLookup } from '../services/geminiService';
-import { PokemonCard } from '../types';
+import React, { useState, useMemo } from 'react';
+import { manualCardLookup, fetchCardsFromSet } from '../services/geminiService';
+import { PokemonCard, IdentificationResult } from '../types';
+import { SURGING_SPARKS_DATA } from '../data/surgingSparks';
 
 interface ManualSearchProps {
   onAddCard: (card: PokemonCard) => void;
 }
 
-const FEATURED_CARDS = [
+const RECENT_SETS = [
   { 
-    name: "Charizard", 
-    detail: "Base Set 4/102", 
-    image: "https://images.pokemontcg.io/base1/4_hires.png" 
+    name: "Surging Sparks", 
+    id: "sv8", 
+    logo: "https://images.pokemontcg.io/sv8/logo.png",
+    isPreloaded: true
   },
   { 
-    name: "Umbreon VMAX", 
-    detail: "Evolving Skies 215/203", 
-    image: "https://images.pokemontcg.io/swsh7/215_hires.png" 
+    name: "Prismatic Evolutions", 
+    id: "sv85", 
+    logo: "https://images.pokemontcg.io/sv85/logo.png",
+    isPreloaded: false
   },
   { 
-    name: "Giratina V", 
-    detail: "Lost Origin 186/196", 
-    image: "https://images.pokemontcg.io/swsh11/186_hires.png" 
-  },
-  { 
-    name: "Rayquaza VMAX", 
-    detail: "Evolving Skies 218/203", 
-    image: "https://images.pokemontcg.io/swsh7/218_hires.png" 
-  },
-  { 
-    name: "Gengar VMAX", 
-    detail: "Fusion Strike 271/264", 
-    image: "https://images.pokemontcg.io/swsh8/271_hires.png" 
+    name: "Stellar Crown", 
+    id: "sv7", 
+    logo: "https://images.pokemontcg.io/sv7/logo.png",
+    isPreloaded: false
   }
 ];
 
 const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingSet, setLoadingSet] = useState(false);
   const [result, setResult] = useState<PokemonCard | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedSet, setSelectedSet] = useState<string | null>(null);
+  const [setCards, setSetCards] = useState<Partial<IdentificationResult>[]>([]);
 
-  const performLookup = async (searchQuery: string) => {
+  const getCardSortNumber = (numStr?: string): number => {
+    if (!numStr) return 9999;
+    const match = numStr.match(/(\d+)/);
+    return match ? parseInt(match[0], 10) : 9999;
+  };
+
+  const sortedSetCards = useMemo(() => {
+    return [...setCards].sort((a, b) => getCardSortNumber(a.number) - getCardSortNumber(b.number));
+  }, [setCards]);
+
+  const performLookup = async (searchQuery: string, preloadedData?: IdentificationResult) => {
     setLoading(true);
     setError(null);
     setResult(null);
 
+    // If preloaded but missing price, we still trigger AI to get the live value
+    const finalSearchQuery = selectedSet === "Surging Sparks" 
+      ? `surging sparks card #${searchQuery} tcgplayer market price`
+      : `${searchQuery} pokemon card market value tcgplayer`;
+
     try {
-      const data = await manualCardLookup(searchQuery);
+      const data = await manualCardLookup(finalSearchQuery);
       if (data && data.name) {
-        const newCard: PokemonCard = {
+        setResult({
           id: Math.random().toString(36).substr(2, 9),
           ...data,
+          // If we had local data but AI failed to get image, merge them
+          imageUrl: data.imageUrl || preloadedData?.imageUrl || `https://placehold.co/400x560/1e293b/white?text=${encodeURIComponent(data.name)}`,
           scanDate: new Date().toLocaleDateString(),
-          imageUrl: data.imageUrl || `https://placehold.co/400x560/1e293b/white?text=${encodeURIComponent(data.name)}`
-        };
-        setResult(newCard);
+        });
       } else {
-        setError("Card data could not be verified. Try adding the set name or a different number.");
+        setError("Card data not found in archives.");
       }
     } catch (err) {
-      setError("Connectivity issue. If this persists, verify your API key and connection.");
+      setError("AI Engine response error. Check connection.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-    performLookup(query);
+  const handleSetSelect = async (setName: string) => {
+    setSelectedSet(setName);
+    if (setName === "Surging Sparks") {
+      setSetCards(SURGING_SPARKS_DATA);
+      return;
+    }
+
+    setLoadingSet(true);
+    try {
+      const cards = await fetchCardsFromSet(setName);
+      setSetCards(cards || []);
+    } catch (err) {
+      setError("Failed to synchronize set archives.");
+    } finally {
+      setLoadingSet(false);
+    }
   };
 
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-12 pb-12">
-      {/* Search Bar Container */}
-      <div className="bg-slate-900/80 backdrop-blur-2xl border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-red-600/5 blur-[80px] rounded-full" />
+    <div className="w-full max-w-5xl mx-auto space-y-12 pb-12">
+      <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 sm:p-12 shadow-2xl relative overflow-hidden">
+        <div className="absolute -top-32 -left-32 w-80 h-80 bg-red-600/20 blur-[120px] rounded-full" />
+        <h2 className="text-4xl font-orbitron font-bold mb-4 tracking-tighter">TCG DATABASE ACCESS</h2>
+        <p className="text-slate-500 text-sm mb-8 font-bold uppercase tracking-widest">Identify cards and retrieve real-time market values.</p>
         
-        <h2 className="text-3xl font-orbitron font-bold mb-2 tracking-tighter">DATA LOOKUP</h2>
-        <p className="text-slate-400 text-sm mb-8 font-medium uppercase tracking-[0.1em]">Synchronize with global TCG database</p>
-        
-        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-4 relative z-10">
-          <div className="flex-1 relative">
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g. Charizard 004/165"
-              className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-6 py-4 text-white focus:outline-none focus:border-red-500 transition-all font-bold placeholder:text-slate-700 shadow-inner"
-              disabled={loading}
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={loading || !query.trim()}
-            className="px-10 py-4 bg-red-600 hover:bg-red-700 disabled:bg-slate-800 disabled:text-slate-600 text-white font-black rounded-2xl transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3 whitespace-nowrap uppercase tracking-widest text-sm"
-          >
-            {loading ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                Searching...
-              </>
-            ) : (
-              "Query Database"
-            )}
+        <form onSubmit={(e) => { e.preventDefault(); performLookup(query); }} className="flex flex-col sm:flex-row gap-4 relative z-10">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by Name or Card Number (e.g. Pikachu 036)"
+            className="flex-1 bg-slate-950 border border-slate-800 rounded-2xl px-6 py-5 text-white focus:outline-none focus:ring-2 focus:ring-red-600 font-bold transition-all text-lg shadow-inner"
+          />
+          <button type="submit" disabled={loading} className="px-12 py-5 bg-red-600 hover:bg-red-700 text-white font-black rounded-2xl shadow-xl uppercase tracking-[0.2em] text-sm transition-all active:scale-95 disabled:opacity-50">
+            {loading ? "Decrypting..." : "Scan Database"}
           </button>
         </form>
+        {error && <p className="mt-4 text-red-500 font-bold text-xs uppercase tracking-widest text-center">{error}</p>}
+      </div>
 
-        {error && (
-          <div className="mt-6 p-4 bg-red-950/20 border border-red-500/20 rounded-2xl text-red-400 text-xs font-bold animate-in fade-in slide-in-from-top-2 flex items-center gap-3">
-            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-            {error}
+      <div className="space-y-8">
+        <div className="flex items-center justify-between gap-6 px-4">
+          <h3 className="text-[11px] font-orbitron font-bold text-slate-500 uppercase tracking-[0.5em]">
+            {selectedSet ? `Exploration: ${selectedSet}` : 'Set Archives'}
+          </h3>
+          {selectedSet && (
+            <button onClick={() => { setSelectedSet(null); setSetCards([]); }} className="text-[11px] font-black text-red-500 hover:text-red-400 uppercase tracking-[0.2em] flex items-center gap-2 transition-all group">
+              <svg className="w-4 h-4 transition-transform group-hover:-translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+              Return to Catalog
+            </button>
+          )}
+          <div className="h-px bg-slate-800/50 flex-1" />
+        </div>
+        
+        {!selectedSet ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-6">
+            {RECENT_SETS.map((set) => (
+              <button key={set.id} onClick={() => handleSetSelect(set.name)} className="group bg-slate-900/50 border border-slate-800 rounded-3xl overflow-hidden hover:shadow-red-600/40 transition-all duration-700 transform hover:-translate-y-3">
+                <div className="aspect-video bg-slate-950 p-8 border-b border-slate-800/50 flex items-center justify-center relative">
+                  <div className="absolute inset-0 bg-gradient-to-br from-red-600/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                  <img src={set.logo} alt={set.name} className="w-full h-full object-contain transition-transform group-hover:scale-125 duration-700 relative z-10" />
+                </div>
+                <div className="p-6 bg-slate-900">
+                  <span className="font-orbitron font-bold text-white text-[10px] uppercase tracking-[0.3em] block text-center group-hover:text-red-500 transition-colors">{set.name}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
+            {loadingSet ? (
+              Array.from({ length: 12 }).map((_, i) => <div key={i} className="aspect-[2.5/3.5] bg-slate-900/50 rounded-3xl animate-pulse border border-slate-800/50" />)
+            ) : (
+              sortedSetCards.map((card, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => performLookup(card.number || card.name || "", card as any)}
+                  className="group flex flex-col bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden hover:shadow-red-600/30 transition-all duration-500 transform hover:-translate-y-2"
+                >
+                  <div className="aspect-[2.5/3.5] bg-slate-950 border-b border-slate-800/50 relative">
+                    <img 
+                      src={card.imageUrl} 
+                      alt={card.name} 
+                      className="w-full h-full object-contain p-2 transition-transform duration-700 group-hover:scale-110" 
+                      onError={(e) => (e.target as HTMLImageElement).src = 'https://placehold.co/400x560/1e293b/white?text=Syncing+Data'} 
+                    />
+                    <div className="absolute bottom-3 right-3 bg-black/80 backdrop-blur-md px-2 py-1 rounded-lg text-[10px] font-black text-slate-400 border border-white/5">
+                      #{card.number?.split('/')[0]}
+                    </div>
+                  </div>
+                  <div className="p-4 text-center bg-slate-900">
+                    <span className="font-orbitron font-bold text-white text-[10px] truncate block uppercase tracking-tight">{card.name}</span>
+                  </div>
+                </button>
+              ))
+            )}
           </div>
         )}
       </div>
 
-      {/* Featured Targets: Binder Aesthetic */}
-      <div className="space-y-6">
-        <div className="flex items-center gap-4 px-2">
-           <h3 className="text-[10px] font-orbitron font-bold text-slate-500 uppercase tracking-[0.4em] whitespace-nowrap">High-Value Database Targets</h3>
-           <div className="h-px bg-slate-800 flex-1" />
-        </div>
-        
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
-          {FEATURED_CARDS.map((card) => (
-            <button
-              key={card.name}
-              onClick={() => performLookup(`${card.name} ${card.detail}`)}
-              disabled={loading}
-              className="group flex flex-col bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg hover:shadow-red-500/40 transition-all duration-500 transform hover:-translate-y-2 text-center disabled:opacity-50 disabled:translate-y-0"
-            >
-              <div className="relative aspect-[2.5/3.5] bg-slate-950 overflow-hidden flex items-center justify-center border-b border-slate-800/50">
-                <img 
-                  src={card.image} 
-                  alt={card.name} 
-                  className="w-full h-full object-contain transition-transform duration-700 group-hover:scale-110" 
-                  onError={(e) => (e.target as HTMLImageElement).src = 'https://placehold.co/400x560/1e293b/white?text=Target'}
-                />
-                <div className="absolute inset-0 bg-red-600/0 group-hover:bg-red-600/5 transition-colors duration-500" />
-              </div>
-              <div className="p-3 bg-slate-900 flex flex-col items-center">
-                <span className="font-orbitron font-bold text-white text-[9px] truncate uppercase tracking-widest w-full">
-                  {card.name}
-                </span>
-                <span className="text-[7px] text-slate-500 uppercase tracking-tighter mt-1 truncate w-full">
-                  {card.detail}
-                </span>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Search Result Overlay/Section */}
       {result && (
-        <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
-          <div className="flex flex-col md:flex-row bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
-            <div className="w-full md:w-[40%] aspect-[2.5/3.5] bg-slate-950 relative border-r border-slate-800/50 flex items-center justify-center">
-              <img src={result.imageUrl} alt={result.name} className="w-full h-full object-contain" />
-              <div className="absolute top-4 left-4 flex gap-2">
-                <span className="bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full shadow-lg tracking-widest">FOUND</span>
-                {result.sourceUrl && (
-                  <a href={result.sourceUrl} target="_blank" rel="noopener" className="bg-blue-600 text-white text-[10px] font-black px-3 py-1 rounded-full shadow-lg tracking-widest flex items-center gap-1">
-                    SOURCE
-                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
-                  </a>
-                )}
-              </div>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/98 backdrop-blur-3xl animate-in fade-in duration-300">
+          <div className="w-full max-w-5xl bg-slate-900 border border-slate-800 rounded-[4rem] overflow-hidden shadow-[0_0_120px_rgba(220,38,38,0.25)] flex flex-col md:flex-row animate-in zoom-in-95 duration-500 border border-white/5">
+            <div className="w-full md:w-[40%] aspect-[2.5/3.5] bg-slate-950 p-12 flex items-center justify-center border-r border-slate-800/50 relative overflow-hidden">
+               <div className="absolute inset-0 bg-radial-gradient from-red-600/10 to-transparent"></div>
+              <img src={result.imageUrl} alt={result.name} className="w-full h-full object-contain drop-shadow-[0_30px_60px_rgba(0,0,0,0.9)] relative z-10 scale-110" />
             </div>
-
-            <div className="flex-1 p-8 flex flex-col justify-between">
+            <div className="flex-1 p-10 md:p-16 flex flex-col justify-between relative">
               <div>
-                <div className="flex justify-between items-start mb-6">
-                  <div>
-                    <h3 className="text-3xl font-orbitron font-bold text-white mb-2 uppercase tracking-tighter">{result.name}</h3>
-                    <p className="text-red-500 font-black uppercase tracking-widest text-[10px] flex items-center gap-2">
-                      {result.type} <span className="w-1 h-1 bg-slate-700 rounded-full" /> {result.set}
-                    </p>
+                <div className="flex justify-between items-start mb-10">
+                  <div className="max-w-[70%]">
+                    <h3 className="text-5xl md:text-6xl font-orbitron font-bold text-white mb-4 uppercase tracking-tighter leading-none">{result.name}</h3>
+                    <div className="flex items-center gap-3">
+                      <span className="bg-red-600 text-white font-black uppercase text-[10px] tracking-[0.3em] px-3 py-1 rounded-lg">SV8 SPARKS</span>
+                      <span className="text-slate-500 text-[10px] font-black uppercase tracking-widest">{result.type} ELEMENT</span>
+                    </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Number</div>
-                    <div className="text-xl font-orbitron font-bold text-white">{result.number}</div>
+                    <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-2">Market Price</div>
+                    <div className="text-4xl font-orbitron font-bold text-green-500 drop-shadow-[0_0_10px_rgba(34,197,94,0.3)]">{result.marketValue || "$??.??"}</div>
                   </div>
                 </div>
 
-                <div className="space-y-4 py-6 border-y border-slate-800/50">
-                   <div className="flex justify-between text-xs font-bold">
-                     <span className="text-slate-500 uppercase tracking-widest">Rarity</span>
-                     <span className="text-slate-200">{result.rarity}</span>
+                <div className="grid grid-cols-2 gap-10 py-12 border-y border-slate-800/50">
+                   <div className="space-y-2">
+                      <span className="text-slate-500 uppercase text-[10px] font-black tracking-widest block opacity-70">Vitality Core</span>
+                      <span className="text-3xl font-orbitron font-bold text-slate-200">{result.hp || "---"} HP</span>
                    </div>
-                   <div className="flex justify-between text-xs font-bold">
-                     <span className="text-slate-500 uppercase tracking-widest">Health Points</span>
-                     <span className="text-slate-200">{result.hp || "N/A"}</span>
+                   <div className="space-y-2">
+                      <span className="text-slate-500 uppercase text-[10px] font-black tracking-widest block opacity-70">Rarity Tier</span>
+                      <span className="text-slate-100 font-bold uppercase text-sm tracking-[0.2em] bg-white/5 px-3 py-1 rounded-lg inline-block border border-white/10">{result.rarity}</span>
                    </div>
                 </div>
+                
+                <div className="mt-8">
+                   <span className="text-slate-500 uppercase text-[10px] font-black tracking-widest block opacity-70 mb-4">Set Archives Number</span>
+                   <span className="text-xl font-orbitron font-bold text-white">#{result.number} / 191</span>
+                </div>
               </div>
-
-              <div className="mt-8 flex gap-3">
-                <button
-                  onClick={() => onAddCard(result)}
-                  className="flex-1 bg-white hover:bg-slate-200 text-slate-950 font-black py-4 rounded-2xl transition-all shadow-xl active:scale-95 uppercase tracking-[0.2em] text-xs"
+              
+              <div className="mt-16 flex gap-6">
+                <button 
+                  onClick={() => { onAddCard(result); setResult(null); }} 
+                  className="flex-1 bg-white hover:bg-red-600 hover:text-white text-slate-950 font-black py-7 rounded-[2.5rem] uppercase text-[13px] tracking-[0.5em] transition-all shadow-2xl active:scale-95 border-none"
                 >
-                  Save to Vault
+                  Confirm to Vault
                 </button>
-                <button
-                  onClick={() => setResult(null)}
-                  className="px-6 bg-slate-800 hover:bg-slate-700 text-white font-bold py-4 rounded-2xl transition-all active:scale-95"
+                <button 
+                  onClick={() => setResult(null)} 
+                  className="px-12 bg-slate-950 hover:bg-slate-800 text-white font-bold py-7 rounded-[2.5rem] transition-all active:scale-95 border border-white/10 shadow-xl"
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                  <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
               </div>
             </div>

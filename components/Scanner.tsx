@@ -20,7 +20,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     try {
       setError(null);
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
       setStream(mediaStream);
@@ -58,22 +58,20 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const context = canvas.getContext('2d');
 
     if (context) {
-      // For identification, we use a high-res shot
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      const fullResImage = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+      const fullResImage = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
       
-      // For local storage preview, we resize to save space
       const previewCanvas = document.createElement('canvas');
-      previewCanvas.width = 400;
-      previewCanvas.height = 560;
+      previewCanvas.width = 600;
+      previewCanvas.height = 840;
       const previewCtx = previewCanvas.getContext('2d');
       if (previewCtx) {
         previewCtx.drawImage(video, 0, 0, previewCanvas.width, previewCanvas.height);
       }
-      const actualPhotoUrl = previewCanvas.toDataURL('image/jpeg', 0.7);
+      const actualPhotoUrl = previewCanvas.toDataURL('image/jpeg', 0.8);
 
       const result = await identifyPokemonCard(fullResImage);
 
@@ -82,12 +80,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           id: Math.random().toString(36).substr(2, 9),
           ...result,
           scanDate: new Date().toLocaleDateString(),
-          // Use the actual photo for the collection, fallback to official art if needed
           imageUrl: actualPhotoUrl || result.imageUrl
         };
         onCardDetected(newCard);
       } else {
-        setError("Could not find official card data. Try a clearer shot.");
+        setError("Card not recognized. Hold steady and try again.");
         setTimeout(() => setError(null), 3000);
       }
     }
@@ -98,7 +95,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full overflow-hidden rounded-3xl shadow-2xl bg-black border-2 border-slate-800 flex flex-col">
       <div className="relative aspect-[3/4] sm:aspect-video bg-slate-900 overflow-hidden">
         {error && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-red-600/90 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-xl animate-bounce backdrop-blur-sm">
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-red-600/90 text-white px-6 py-2 rounded-xl text-sm font-bold shadow-xl backdrop-blur-sm">
                 {error}
             </div>
         )}
@@ -113,65 +110,54 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             />
             
             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-              <div className={`relative w-[65%] sm:w-[30%] aspect-[2.5/3.5] border-2 transition-all duration-300 rounded-2xl ${
-                  loading ? 'border-yellow-400 scale-105 shadow-[0_0_30px_rgba(250,204,21,0.4)]' : 'border-red-600/50 shadow-[0_0_20px_rgba(220,38,38,0.2)]'
+              <div className={`relative w-[70%] sm:w-[35%] aspect-[2.5/3.5] border-2 transition-all duration-300 rounded-3xl ${
+                  loading ? 'border-yellow-400 scale-105 shadow-[0_0_50px_rgba(250,204,21,0.5)]' : 'border-white/20 shadow-[0_0_30px_rgba(255,255,255,0.1)]'
               }`}>
-                <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-xl opacity-80"></div>
-                <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-xl opacity-80"></div>
-                <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-xl opacity-80"></div>
-                <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-xl opacity-80"></div>
+                <div className="absolute -top-1 -left-1 w-10 h-10 border-t-4 border-l-4 border-white rounded-tl-2xl"></div>
+                <div className="absolute -top-1 -right-1 w-10 h-10 border-t-4 border-r-4 border-white rounded-tr-2xl"></div>
+                <div className="absolute -bottom-1 -left-1 w-10 h-10 border-b-4 border-l-4 border-white rounded-bl-2xl"></div>
+                <div className="absolute -bottom-1 -right-1 w-10 h-10 border-b-4 border-r-4 border-white rounded-br-2xl"></div>
                 
-                <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-950/80 backdrop-blur-md px-4 py-1.5 rounded-full border border-white/20 whitespace-nowrap">
-                  <span className="text-[10px] font-orbitron font-bold uppercase tracking-[0.2em] text-white">
-                    {loading ? 'Performing Deep Lookup...' : 'Align Card for Database Scan'}
+                <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-slate-950/90 backdrop-blur-xl px-5 py-2 rounded-full border border-white/20 whitespace-nowrap shadow-2xl">
+                  <span className="text-[11px] font-orbitron font-bold uppercase tracking-[0.2em] text-white">
+                    {loading ? 'Analyzing Value & Data...' : 'Position Card Inside Frame'}
                   </span>
                 </div>
-
-                {!loading && (
-                    <div className="absolute top-0 left-0 w-full h-[3px] bg-red-500/60 shadow-[0_0_15px_#ef4444] animate-[scan_2.5s_ease-in-out_infinite] rounded-full"></div>
-                )}
               </div>
             </div>
 
-            <div className="absolute bottom-10 left-0 right-0 flex justify-center items-center gap-6 px-4">
+            <div className="absolute bottom-12 left-0 right-0 flex justify-center items-center gap-8 px-4">
               <button
                 onClick={() => setIsScanning(false)}
-                className="w-14 h-14 rounded-full bg-slate-900/80 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all backdrop-blur-md"
+                className="w-16 h-16 rounded-full bg-slate-950/90 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all backdrop-blur-xl hover:scale-110 active:scale-90"
               >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
               </button>
 
               <button onClick={captureFrame} disabled={loading} className="group relative">
-                <div className={`w-20 h-20 rounded-full border-4 flex items-center justify-center transition-all ${
-                    loading ? 'border-yellow-500 bg-yellow-500/20' : 'border-white bg-red-600 shadow-[0_0_20px_rgba(220,38,38,0.5)]'
+                <div className={`w-24 h-24 rounded-full border-[6px] flex items-center justify-center transition-all ${
+                    loading ? 'border-yellow-500 bg-yellow-500/20' : 'border-white bg-red-600 shadow-[0_0_40px_rgba(220,38,38,0.6)]'
                 }`}>
                   {loading ? (
-                    <svg className="animate-spin h-8 w-8 text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    <svg className="animate-spin h-10 w-10 text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                   ) : (
-                    <div className="w-12 h-12 rounded-full bg-white opacity-80 scale-100 group-hover:scale-90 transition-transform"></div>
+                    <div className="w-14 h-14 rounded-full bg-white opacity-90 group-hover:scale-90 transition-transform shadow-inner"></div>
                   )}
                 </div>
               </button>
-              <div className="w-14 h-14"></div>
+              
+              <div className="w-16 h-16"></div>
             </div>
           </>
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 p-12 text-center">
-             <button onClick={startCamera} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full shadow-lg transition-all">
-               Grant Access
+             <button onClick={startCamera} className="px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-black rounded-full shadow-2xl transition-all uppercase tracking-widest text-sm active:scale-95">
+               Initialize Camera
              </button>
           </div>
         )}
       </div>
       <canvas ref={canvasRef} className="hidden" />
-      <style>{`
-        @keyframes scan {
-          0% { top: 10%; opacity: 0; }
-          10% { opacity: 1; }
-          90% { opacity: 1; }
-          100% { top: 90%; opacity: 0; }
-        }
-      `}</style>
     </div>
   );
 };

@@ -18,6 +18,7 @@ export interface PokemonCard {
   imageUrl?: string;
   scanDate: string;
   sourceUrl?: string;
+  marketValue?: string;
 }
 
 export interface IdentificationResult {
@@ -31,4 +32,5 @@ export interface IdentificationResult {
   attacks: PokemonAttack[];
   sourceUrl?: string;
   imageUrl?: string;
+  marketValue?: string;
 }
