@@ -1,45 +1,49 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
-const SYSTEM_INSTRUCTION = `You are a world-class Pokémon TCG historian and database specialist. 
-Your primary goal is to provide official card data.
-When asked to identify or look up a card:
-1. Use Google Search to find the EXACT match on TCGPlayer, Pokemon.com, or Bulbapedia.
-2. Provide the official name, set name, card number, rarity, and type.
-3. Crucially, find the direct URL to the high-resolution official card art.
-4. RETURN THE DATA IN A CLEAR JSON BLOCK within your response.
-
-Format your response exactly like this:
-{
-  "name": "Card Name",
-  "set": "Set Name",
-  "rarity": "Rarity",
-  "type": "Fire/Water/etc",
-  "number": "123/456",
-  "hp": "120 HP",
-  "imageUrl": "https://example.com/art.jpg",
-  "abilities": ["Ability 1"],
-  "attacks": [{"name": "Attack", "damage": "30", "description": "Desc"}]
-}`;
+const SYSTEM_INSTRUCTION = `You are an expert Pokémon TCG assistant. 
+Your goal is to provide official card data and a direct URL to the official card art image.
+Use Google Search to verify the card details (Name, Set, Number, Rarity) against official sources like TCGPlayer or Pokemon.com.
+Always return the data in the specified JSON format.`;
 
 const MODEL_NAME = 'gemini-3-flash-preview';
 
 /**
- * Extracts a JSON object from a string that may contain other text.
+ * Returns a robust configuration for the Gemini API call.
+ * We use a schema to ensure the output is always valid JSON.
  */
-const extractJson = (text: string) => {
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      return JSON.parse(match[0]);
-    }
-    return null;
-  } catch (e) {
-    console.error("JSON parsing failed", e);
-    return null;
-  }
-};
+const getSafeConfig = () => ({
+  systemInstruction: SYSTEM_INSTRUCTION,
+  tools: [{ googleSearch: {} }],
+  responseMimeType: "application/json",
+  responseSchema: {
+    type: Type.OBJECT,
+    properties: {
+      name: { type: Type.STRING },
+      set: { type: Type.STRING },
+      rarity: { type: Type.STRING },
+      type: { type: Type.STRING },
+      number: { type: Type.STRING },
+      hp: { type: Type.STRING },
+      imageUrl: { type: Type.STRING, description: "A direct URL to the official card image (from pokemon.com or tcgplayer)" },
+      abilities: { type: Type.ARRAY, items: { type: Type.STRING } },
+      attacks: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            name: { type: Type.STRING },
+            damage: { type: Type.STRING },
+            description: { type: Type.STRING }
+          }
+        }
+      }
+    },
+    // Only require the absolute essentials to prevent failure on Trainer/Energy cards
+    required: ["name", "set", "number", "imageUrl"],
+  },
+});
 
 export const identifyPokemonCard = async (base64Image: string): Promise<IdentificationResult | null> => {
   try {
@@ -56,29 +60,23 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
               },
             },
             {
-              text: "Identify this Pokémon TCG card. Use your search tool to find its official database entry and image URL. Return the JSON block.",
+              text: "Identify this Pokémon TCG card from the image. Provide official name, set, number, and a direct URL to its official art image.",
             },
           ],
         },
       ],
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        tools: [{ googleSearch: {} }],
-      },
+      config: getSafeConfig() as any,
     });
 
-    const text = response.text;
-    if (!text) return null;
-
-    const result = extractJson(text) as IdentificationResult;
-    if (!result) return null;
-
+    const result = JSON.parse(response.text) as IdentificationResult;
+    
+    // Extract grounding link for mandatory attribution
     const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
     const sourceUrl = groundingChunks?.find(c => c.web?.uri)?.web?.uri;
 
     return { ...result, sourceUrl };
   } catch (error) {
-    console.error("Error identifying card:", error);
+    console.error("Card Identification Error:", error);
     return null;
   }
 };
@@ -88,25 +86,18 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: `Look up official TCG data for: "${query}". Ensure you find a direct official image URL and include a JSON block in your response.`,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        tools: [{ googleSearch: {} }],
-      },
+      contents: `Look up official TCG database details for: "${query}". Include a direct official image URL.`,
+      config: getSafeConfig() as any,
     });
 
-    const text = response.text;
-    if (!text) return null;
-
-    const result = extractJson(text) as IdentificationResult;
-    if (!result) return null;
-
+    const result = JSON.parse(response.text) as IdentificationResult;
+    
     const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
     const sourceUrl = groundingChunks?.find(c => c.web?.uri)?.web?.uri;
 
     return { ...result, sourceUrl };
   } catch (error) {
-    console.error("Error looking up card manually:", error);
+    console.error("Manual Lookup Error:", error);
     return null;
   }
 };
