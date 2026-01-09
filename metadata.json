@@ -1,0 +1,7 @@
+{
+  "name": "PokéScan Collector",
+  "description": "A high-tech Pokémon card scanner and collection manager that uses AI to identify cards from your camera feed.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
