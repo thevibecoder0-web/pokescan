@@ -2,10 +2,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-
 export const identifyPokemonCard = async (base64Image: string): Promise<IdentificationResult | null> => {
   try {
+    // Initialize inside the function to ensure process.env.API_KEY is available
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [
@@ -18,7 +19,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
               },
             },
             {
-              text: "Identify this Pokemon trading card. Extract the card name, set name, rarity, type, and card number. Be as accurate as possible. If the image is not a Pokemon card, return placeholders.",
+              text: "Identify this Pokemon trading card. Extract the card name, set name, rarity, type, and card number. Be as accurate as possible. If the image is not a Pokemon card, return placeholders with the word 'Unknown'.",
             },
           ],
         },

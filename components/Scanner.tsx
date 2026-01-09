@@ -18,8 +18,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   const startCamera = async () => {
     try {
+      setError(null);
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
       setStream(mediaStream);
@@ -57,6 +58,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const context = canvas.getContext('2d');
 
     if (context) {
+      // Use full resolution of video for identification
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -69,88 +71,121 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           id: Math.random().toString(36).substr(2, 9),
           ...result,
           scanDate: new Date().toLocaleDateString(),
-          imageUrl: `https://picsum.photos/seed/${result.name}/400/600` // Placeholder logic
+          imageUrl: `https://picsum.photos/seed/${encodeURIComponent(result.name + result.number)}/400/600`
         };
         onCardDetected(newCard);
-        setIsScanning(false);
+      } else {
+        setError("Could not identify a Pokémon card. Try again with better lighting.");
+        setTimeout(() => setError(null), 3000);
       }
     }
     setLoading(false);
-  }, [loading, onCardDetected, setIsScanning]);
+  }, [loading, onCardDetected]);
 
   return (
-    <div className="relative w-full max-w-2xl mx-auto overflow-hidden rounded-2xl shadow-2xl bg-black border-4 border-slate-800">
-      {isScanning ? (
-        <div className="relative aspect-[4/3]">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            className="w-full h-full object-cover"
-          />
-          
-          {/* Scanning Overlay (Red Border) */}
-          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div className={`relative w-[70%] aspect-[2.5/3.5] border-4 ${loading ? 'border-yellow-400 animate-pulse' : 'border-red-600'} transition-colors duration-300 rounded-lg shadow-[0_0_20px_rgba(220,38,38,0.5)]`}>
-              <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-red-600 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest whitespace-nowrap">
-                {loading ? 'Analyzing...' : 'Align Card Within Frame'}
-              </div>
-              
-              {/* Corner markers */}
-              <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-white rounded-tl-md"></div>
-              <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-white rounded-tr-md"></div>
-              <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-white rounded-bl-md"></div>
-              <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-white rounded-br-md"></div>
-              
-              {/* Scanning line effect */}
-              <div className="absolute top-0 left-0 w-full h-[2px] bg-red-500/50 shadow-[0_0_10px_#ef4444] animate-[scan_2s_linear_infinite]"></div>
+    <div className="relative w-full overflow-hidden rounded-3xl shadow-2xl bg-black border-2 border-slate-800 flex flex-col">
+      <div className="relative aspect-[3/4] sm:aspect-video bg-slate-900 overflow-hidden">
+        {error && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-red-600/90 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-xl animate-bounce backdrop-blur-sm">
+                {error}
             </div>
-          </div>
+        )}
 
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4">
-            <button
-              onClick={captureFrame}
-              disabled={loading}
-              className="px-8 py-3 bg-red-600 hover:bg-red-700 disabled:bg-slate-600 text-white font-bold rounded-full shadow-lg transition-all active:scale-95 flex items-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                  Scanning...
-                </>
-              ) : (
-                'Capture Card'
-              )}
-            </button>
-            <button
-              onClick={() => setIsScanning(false)}
-              className="px-6 py-3 bg-slate-800/80 hover:bg-slate-700 text-white font-semibold rounded-full backdrop-blur-sm transition-all"
-            >
-              Cancel
-            </button>
+        {isScanning ? (
+          <>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
+            />
+            
+            {/* HUD / Scanning Overlay */}
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+              {/* Central Target Frame */}
+              <div className={`relative w-[65%] sm:w-[30%] aspect-[2.5/3.5] border-2 transition-all duration-300 rounded-2xl ${
+                  loading ? 'border-yellow-400 scale-105 shadow-[0_0_30px_rgba(250,204,21,0.4)]' : 'border-red-600/50 shadow-[0_0_20px_rgba(220,38,38,0.2)]'
+              }`}>
+                {/* HUD Corners */}
+                <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-xl opacity-80"></div>
+                <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-xl opacity-80"></div>
+                <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-xl opacity-80"></div>
+                <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-xl opacity-80"></div>
+                
+                {/* Floating Scan Label */}
+                <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-950/80 backdrop-blur-md px-4 py-1.5 rounded-full border border-white/20 whitespace-nowrap">
+                  <span className="text-[10px] font-orbitron font-bold uppercase tracking-[0.2em] text-white">
+                    {loading ? 'Analyzing Quantum Data...' : 'Align Card for Scan'}
+                  </span>
+                </div>
+
+                {/* Animated Scan Line */}
+                {!loading && (
+                    <div className="absolute top-0 left-0 w-full h-[3px] bg-red-500/60 shadow-[0_0_15px_#ef4444] animate-[scan_2.5s_ease-in-out_infinite] rounded-full"></div>
+                )}
+              </div>
+
+              {/* HUD Decoration */}
+              <div className="absolute bottom-8 left-8 text-xs font-orbitron text-white/40 space-y-1 hidden sm:block">
+                <div>SYS_MODE: SCAN_IDENTIFY</div>
+                <div>CAM_RES: {videoRef.current?.videoWidth || 0}x{videoRef.current?.videoHeight || 0}</div>
+                <div>STATUS: {loading ? 'BUSY' : 'READY'}</div>
+              </div>
+            </div>
+
+            {/* Bottom Controls */}
+            <div className="absolute bottom-10 left-0 right-0 flex justify-center items-center gap-6 px-4">
+              <button
+                onClick={() => setIsScanning(false)}
+                className="w-14 h-14 rounded-full bg-slate-900/80 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all backdrop-blur-md"
+                title="Cancel"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+              </button>
+
+              <button
+                onClick={captureFrame}
+                disabled={loading}
+                className="group relative"
+              >
+                <div className={`w-20 h-20 rounded-full border-4 flex items-center justify-center transition-all ${
+                    loading ? 'border-yellow-500 bg-yellow-500/20' : 'border-white bg-red-600 shadow-[0_0_20px_rgba(220,38,38,0.5)]'
+                }`}>
+                  {loading ? (
+                    <svg className="animate-spin h-8 w-8 text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                  ) : (
+                    <div className="w-12 h-12 rounded-full bg-white opacity-80 scale-100 group-hover:scale-90 transition-transform"></div>
+                  )}
+                </div>
+              </button>
+
+              <div className="w-14 h-14"></div> {/* Spacer to keep capture centered */}
+            </div>
+          </>
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 p-12 text-center">
+             <div className="w-20 h-20 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center mb-4">
+                <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+             </div>
+             <p className="font-bold text-white mb-2">Camera Access Required</p>
+             <p className="text-sm max-w-xs mb-6">We need your permission to use the camera to identify cards.</p>
+             <button
+               onClick={startCamera}
+               className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full shadow-lg transition-all"
+             >
+               Grant Access
+             </button>
           </div>
-        </div>
-      ) : (
-        <div className="aspect-[4/3] flex flex-col items-center justify-center bg-slate-900 text-slate-400 p-8 text-center">
-          <div className="w-20 h-20 mb-4 rounded-full bg-slate-800 flex items-center justify-center border-2 border-slate-700">
-             <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-          </div>
-          <h3 className="text-xl font-bold text-white mb-2">Scanner Offline</h3>
-          <p className="max-w-xs mb-6">Point your camera at a Pokémon card to identify and add it to your collection.</p>
-          <button
-            onClick={() => setIsScanning(true)}
-            className="px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full shadow-lg transition-all"
-          >
-            Start Scanning
-          </button>
-        </div>
-      )}
+        )}
+      </div>
       <canvas ref={canvasRef} className="hidden" />
       
       <style>{`
         @keyframes scan {
-          0% { top: 0; }
-          100% { top: 100%; }
+          0% { top: 10%; opacity: 0; }
+          10% { opacity: 1; }
+          90% { opacity: 1; }
+          100% { top: 90%; opacity: 0; }
         }
       `}</style>
     </div>
