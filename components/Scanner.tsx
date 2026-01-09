@@ -20,7 +20,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     try {
       setError(null);
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
       setStream(mediaStream);
@@ -58,19 +58,32 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const context = canvas.getContext('2d');
 
     if (context) {
+      // For identification, we use a high-res shot
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-      const result = await identifyPokemonCard(base64Image);
+      const fullResImage = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+      
+      // For local storage preview, we resize to save space
+      const previewCanvas = document.createElement('canvas');
+      previewCanvas.width = 400;
+      previewCanvas.height = 560;
+      const previewCtx = previewCanvas.getContext('2d');
+      if (previewCtx) {
+        previewCtx.drawImage(video, 0, 0, previewCanvas.width, previewCanvas.height);
+      }
+      const actualPhotoUrl = previewCanvas.toDataURL('image/jpeg', 0.7);
+
+      const result = await identifyPokemonCard(fullResImage);
 
       if (result && result.name && result.name.toLowerCase() !== 'unknown') {
         const newCard: PokemonCard = {
           id: Math.random().toString(36).substr(2, 9),
           ...result,
           scanDate: new Date().toLocaleDateString(),
-          imageUrl: `https://picsum.photos/seed/${encodeURIComponent(result.name + result.number)}/400/600`
+          // Use the actual photo for the collection, fallback to official art if needed
+          imageUrl: actualPhotoUrl || result.imageUrl
         };
         onCardDetected(newCard);
       } else {

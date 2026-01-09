@@ -29,4 +29,6 @@ export interface IdentificationResult {
   hp: string;
   abilities: string[];
   attacks: PokemonAttack[];
+  sourceUrl?: string;
+  imageUrl?: string;
 }
