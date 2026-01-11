@@ -7,7 +7,6 @@ let isInitializing = false;
 export interface OCRResult {
   name: string;
   number: string;
-  bbox: { x0: number; y0: number; x1: number; y1: number } | null;
   strategyUsed: string;
 }
 
@@ -31,9 +30,10 @@ const getLevenshteinDistance = (a: string, b: string): number => {
   return matrix[a.length][b.length];
 };
 
+// Expanded dictionary for better fuzzy matching
 const POKEMON_SPECIES = [
   "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise", "Caterpie", "Metapod", "Butterfree", "Weedle", "Kakuna", "Beedrill", "Pidgey", "Pidgeotto", "Pidgeot", "Rattata", "Raticate", "Spearow", "Fearow", "Ekans", "Arbok", "Pikachu", "Raichu", "Sandshrew", "Sandslash", "Nidoran", "Nidorina", "Nidoqueen", "Nidorino", "Nidoking", "Clefairy", "Clefable", "Vulpix", "Ninetales", "Jigglypuff", "Wigglytuff", "Zubat", "Golbat", "Oddish", "Gloom", "Vileplume", "Paras", "Parasect", "Venonat", "Venomoth", "Diglett", "Dugtrio", "Meowth", "Persian", "Psyduck", "Golduck", "Mankey", "Primeape", "Growlithe", "Arcanine", "Poliwag", "Poliwhirl", "Poliwrath", "Abra", "Kadabra", "Alakazam", "Machop", "Machoke", "Machamp", "Bellsprout", "Weepinbell", "Victreebel", "Tentacool", "Tentacruel", "Geodude", "Graveler", "Golem", "Ponyta", "Rapidash", "Slowpoke", "Slowbro", "Magnemite", "Magneton", "Farfetch'd", "Doduo", "Dodrio", "Seel", "Dewgong", "Grimer", "Muk", "Shellder", "Cloyster", "Gastly", "Haunter", "Gengar", "Onix", "Drowzee", "Hypno", "Krabby", "Kingler", "Voltorb", "Electrode", "Exeggcute", "Exeggutor", "Cubone", "Marowak", "Hitmonlee", "Hitmonchan", "Lickitung", "Koffing", "Weezing", "Rhyhorn", "Rhydon", "Chansey", "Tangela", "Kangaskhan", "Horsea", "Seadra", "Goldeen", "Seaking", "Staryu", "Starmie", "Mr. Mime", "Scyther", "Jynx", "Electabuzz", "Magmar", "Pinsir", "Tauros", "Magikarp", "Gyarados", "Lapras", "Ditto", "Eevee", "Vaporeon", "Jolteon", "Flareon", "Porygon", "Omanyte", "Omastar", "Kabuto", "Kabutops", "Aerodactyl", "Snorlax", "Articuno", "Zapdos", "Moltres", "Dratini", "Dragonair", "Dragonite", "Mewtwo", "Mew",
-  "Chikorita", "Bayleef", "Meganium", "Cyndaquil", "Quilava", "Typhlosion", "Totodile", "Croconaw", "Feraligatr", "Sentret", "Furret", "Hoothoot", "Noctowl", "Ledyba", "Ledian", "Spinarak", "Ariados", "Crobat", "Chinchou", "Lanturn", "Pichu", "Cleffa", "Igglybuff", "Togepi", "Togetic", "Natu", "Xatu", "Mareep", "Flaaffy", "Ampharos", "Bellossom", "Marill", "Azumarill", "Sudowoodo", "Politoed", "Hoppip", "Skiploom", "Jumpluff", "Aipom", "Sunkern", "Sunflora", "Yanma", "Wooper", "Quagsire", "Espeon", "Umbreon", "Murkrow", "Slowking", "Misdreavus", "Unown", "Wobbuffet", "Girafarig", "Pineco", "Forretress", "Dunsparce", "Gligar", "Steelix", "Scizor", "Shuckle", "Heracross", "Sneasel", "Teddiursa", "Ursaring", "Slugma", "Magcargo", "Swinub", "Piloswine", "Corsola", "Remoraid", "Octillery", "Delibird", "Mantine", "Skarmory", "Houndour", "Houndoom", "Kingdra", "Phanpy", "Donphan", "Porygon2", "Stantler", "Smeargle", "Tyrogue", "Hitmontop", "Smoochum", "Elekid", "Magby", "Miltank", "Blissey", "Raikou", "Entei", "Suicune", "Larvitar", "Pupitar", "Tyranitar", "Lugia", "Ho-Oh", "Celebi"
+  "Pichu", "Lugia", "Ho-Oh", "Celebi", "Rayquaza", "Kyogre", "Groudon", "Lucario", "Greninja", "Mimikyu", "Mew", "Eternatus", "Zacian", "Zamazenta", "Koraidon", "Miraidon", "Terapagos", "Milotic"
 ];
 
 export const initOCRWorker = async () => {
@@ -43,9 +43,7 @@ export const initOCRWorker = async () => {
     worker = await createWorker('eng');
     await worker.setParameters({
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -',
-      tessjs_create_hocr: '0',
-      tessjs_create_tsv: '0',
-      tessedit_pageseg_mode: '11', // Sparse text finding
+      tessedit_pageseg_mode: '7', // Treat as a single line of text
     });
   } catch (err) {
     console.error("Worker Initialization Failed", err);
@@ -54,13 +52,8 @@ export const initOCRWorker = async () => {
   }
 };
 
-const fixCommonOcrErrors = (text: string) => {
-  return text
-    .replace(/\|/g, 'I')
-    .replace(/0/g, 'O') // Context dependent, but good for name matching
-    .replace(/1/g, 'I')
-    .replace(/5/g, 'S')
-    .replace(/8/g, 'B');
+const cleanText = (text: string) => {
+  return text.trim().replace(/[\n\r]/g, ' ').replace(/\s+/g, ' ');
 };
 
 export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
@@ -70,80 +63,83 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
     const w = cardCanvas.width;
     const h = cardCanvas.height;
 
-    // TCG Layout Specific Regions (Optimized for warped 400x560)
-    const regions = [
-      { x: w * 0.05, y: h * 0.02, w: w * 0.65, h: h * 0.09 }, // Name
-      { x: w * 0.02, y: h * 0.88, w: w * 0.40, h: h * 0.10 }  // Number
-    ];
+    // We define regions on the warped 400x560 canvas
+    const nameRegion = { x: w * 0.05, y: h * 0.02, w: w * 0.65, h: h * 0.10 };
+    const numRegion = { x: w * 0.02, y: h * 0.88, w: w * 0.40, h: h * 0.11 };
 
-    const scanCanvas = document.createElement('canvas');
-    const sCtx = scanCanvas.getContext('2d');
-    if (!sCtx) return null;
-
-    const rowH = 60; // Fixed height per row for consistency
-    scanCanvas.width = w;
-    scanCanvas.height = rowH * regions.length;
-    sCtx.fillStyle = 'white';
-    sCtx.fillRect(0, 0, scanCanvas.width, scanCanvas.height);
-
-    regions.forEach((r, i) => {
-      sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, i * rowH, r.w, rowH);
-    });
-
-    const { data } = await worker.recognize(scanCanvas);
-    
-    let detectedName: string | null = null;
-    let detectedNumber: string | null = null;
-    const boundaryY = rowH + 5;
-
-    for (const word of data.words) {
-      const text = word.text.trim();
-      if (text.length < 2) continue;
-
-      const y = (word.bbox.y0 + word.bbox.y1) / 2;
-
-      // Logic: Top Row = Name
-      if (!detectedName && y < boundaryY) {
-        const cleanName = text.replace(/[^a-zA-Z]/g, '');
-        if (cleanName.length >= 3) {
-          const exact = POKEMON_SPECIES.find(s => s.toLowerCase() === cleanName.toLowerCase());
-          if (exact) {
-            detectedName = exact;
-          } else {
-            // Fuzzy match with OCR correction
-            const fixed = fixCommonOcrErrors(cleanName);
-            for (const species of POKEMON_SPECIES) {
-              const dist = getLevenshteinDistance(fixed, species);
-              if (dist <= (species.length > 6 ? 2 : 1)) {
-                detectedName = species;
-                break;
-              }
-            }
-          }
-        }
+    const getSegmentText = async (region: {x: number, y: number, w: number, h: number}) => {
+      const segCanvas = document.createElement('canvas');
+      segCanvas.width = region.w * 2; // Upscale for Tesseract
+      segCanvas.height = region.h * 2;
+      const ctx = segCanvas.getContext('2d');
+      if (!ctx) return "";
+      
+      // Draw and upscale
+      ctx.drawImage(cardCanvas, region.x, region.y, region.w, region.h, 0, 0, segCanvas.width, segCanvas.height);
+      
+      // Basic image enrichment for OCR
+      const imgData = ctx.getImageData(0, 0, segCanvas.width, segCanvas.height);
+      for (let i = 0; i < imgData.data.length; i += 4) {
+        const avg = (imgData.data[i] + imgData.data[i+1] + imgData.data[i+2]) / 3;
+        const val = avg > 128 ? 255 : 0; // Simple threshold
+        imgData.data[i] = val;
+        imgData.data[i+1] = val;
+        imgData.data[i+2] = val;
       }
+      ctx.putImageData(imgData, 0, 0);
 
-      // Logic: Bottom Row = Number
-      if (!detectedNumber && y >= boundaryY) {
-        // Match 001/191, SV8-001, 001, etc.
-        const numMatch = text.match(/([A-Z0-9]{1,5}\/\d{1,3})|(\d{3,4})|([A-Z]{1,2}\d{1,3})|(\d{1,3}\/\d{1,3})/i);
-        if (numMatch) detectedNumber = numMatch[0];
+      const { data } = await worker.recognize(segCanvas);
+      return cleanText(data.text);
+    };
+
+    const rawName = await getSegmentText(nameRegion);
+    const rawNum = await getSegmentText(numRegion);
+
+    if (!rawName && !rawNum) return null;
+
+    let detectedName = "";
+    // Fuzzy search for name
+    const words = rawName.split(' ');
+    for (const word of words) {
+      const cleanWord = word.replace(/[^a-zA-Z]/g, '');
+      if (cleanWord.length < 3) continue;
+      
+      const match = POKEMON_SPECIES.find(s => s.toLowerCase() === cleanWord.toLowerCase());
+      if (match) {
+        detectedName = match;
+        break;
       }
       
-      if (detectedName && detectedNumber) break;
+      // Levenshtein fallback
+      for (const species of POKEMON_SPECIES) {
+        if (getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase()) <= 1) {
+          detectedName = species;
+          break;
+        }
+      }
+      if (detectedName) break;
     }
 
-    if (detectedName && detectedNumber) {
+    // Default to raw if no fuzzy match but we have something
+    if (!detectedName && rawName.length > 3) {
+       detectedName = rawName.split(' ')[0].replace(/[^a-zA-Z]/g, '');
+    }
+
+    // Extract number pattern like 001/191 or SV8 001
+    const numMatch = rawNum.match(/(\d{1,3}\/\d{1,3})|([A-Z0-9]{2,5}\s?\d{1,3})/i);
+    const detectedNumber = numMatch ? numMatch[0] : (rawNum.length > 0 ? rawNum : "???");
+
+    if (detectedName.length > 2 || detectedNumber !== "???") {
       return {
-        name: detectedName,
+        name: detectedName || "Scanning...",
         number: detectedNumber,
-        bbox: null,
-        strategyUsed: "INSTANT_NEURAL_CROP"
+        strategyUsed: "MULTI_SEGMENT_OCR"
       };
     }
     
     return null;
   } catch (error) {
+    console.error("OCR Local Error", error);
     return null;
   }
 };

@@ -25,7 +25,6 @@ const SCAN_STATUS_MESSAGES = [
   "VERIFYING_HOLOGRAPHY..."
 ];
 
-// Normalized coordinates (0-1) for sectors on the card
 const TARGET_REGIONS = {
   name: { u: 0.05, v: 0.02, uw: 0.65, vh: 0.09 },
   number: { u: 0.02, v: 0.88, uw: 0.40, vh: 0.10 }
@@ -53,7 +52,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [isProcessingLocal, setIsProcessingLocal] = useState(false);
   const [statusIdx, setStatusIdx] = useState(0);
   
-  // Jitter for high-tech look
   const [jitter, setJitter] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
@@ -133,10 +131,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const anim = () => {
       if (targetCorners) {
         setVisualCorners(p => p ? {
-          tl: { x: lerp(p.tl.x, targetCorners.tl.x, 0.2), y: lerp(p.tl.y, targetCorners.tl.y, 0.2) },
-          tr: { x: lerp(p.tr.x, targetCorners.tr.x, 0.2), y: lerp(p.tr.y, targetCorners.tr.y, 0.2) },
-          bl: { x: lerp(p.bl.x, targetCorners.bl.x, 0.2), y: lerp(p.bl.y, targetCorners.bl.y, 0.2) },
-          br: { x: lerp(p.br.x, targetCorners.br.x, 0.2), y: lerp(p.br.y, targetCorners.br.y, 0.2) }
+          tl: { x: lerp(p.tl.x, targetCorners.tl.x, 0.25), y: lerp(p.tl.y, targetCorners.tl.y, 0.25) },
+          tr: { x: lerp(p.tr.x, targetCorners.tr.x, 0.25), y: lerp(p.tr.y, targetCorners.tr.y, 0.25) },
+          bl: { x: lerp(p.bl.x, targetCorners.bl.x, 0.25), y: lerp(p.bl.y, targetCorners.bl.y, 0.25) },
+          br: { x: lerp(p.br.x, targetCorners.br.x, 0.25), y: lerp(p.br.y, targetCorners.br.y, 0.25) }
         } : targetCorners);
       } else {
         setVisualCorners(null);
@@ -194,13 +192,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       if (found) { 
         setTargetCorners(found); 
-        // Trigger AI periodically if locked
-        if (!isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 5000) {
+        if (!isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 6000) {
           const snapshot = document.createElement('canvas');
           snapshot.width = v.videoWidth;
           snapshot.height = v.videoHeight;
           snapshot.getContext('2d')?.drawImage(v, 0, 0);
-          processAILookup(snapshot.toDataURL('image/jpeg', 0.8).split(',')[1]);
+          processAILookup(snapshot.toDataURL('image/jpeg', 0.85).split(',')[1]);
         }
       } else {
         setTargetCorners(null);
@@ -216,17 +213,22 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     try {
       const v = videoRef.current;
       const corners = targetCorners;
+      
+      // Upscale the warped card for better OCR (400x560 -> 600x840)
       let src = cv.imread(v), dst = new cv.Mat(), dsize = new cv.Size(400, 560);
       let sc = cv.matFromArray(4, 1, cv.CV_32FC2, [corners.tl.x, corners.tl.y, corners.tr.x, corners.tr.y, corners.br.x, corners.br.y, corners.bl.x, corners.bl.y]);
       let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 400, 0, 400, 560, 0, 560]);
       let M = cv.getPerspectiveTransform(sc, dc);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+      
+      // Perform local image enhancement with OpenCV before OCR if needed, 
+      // but for now we pass the clean warped card to ocrService which does its own binarization
       cv.imshow(cardCanvasRef.current, dst);
       
       const ocrData = await extractNameLocally(cardCanvasRef.current);
       if (ocrData) {
         setDetectedData(ocrData);
-        if (ocrData.name && ocrData.number) {
+        if (ocrData.name && ocrData.name !== "Scanning..." && ocrData.number !== "???") {
           onCardDetected({ 
             id: Math.random().toString(36).substr(2,9), 
             name: ocrData.name, 
@@ -252,12 +254,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       int = window.setInterval(() => {
         detectCardWithCV();
         if (targetCorners) runLocalOCR();
-      }, 150);
+      }, 200);
     }
     return () => clearInterval(int);
   }, [isScanning, cvReady, targetCorners, detectCardWithCV, runLocalOCR]);
 
-  // Bilinear interpolation for mapping sector points in perspective
   const getQuadPoint = (c: CardCorners, u: number, v: number) => ({
     x: (1 - u) * (1 - v) * c.tl.x + u * (1 - v) * c.tr.x + (1 - u) * v * c.bl.x + u * v * c.br.x,
     y: (1 - u) * (1 - v) * c.tl.y + u * (1 - v) * c.tr.y + (1 - u) * v * c.bl.y + u * v * c.br.y
@@ -275,86 +276,78 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
-      {/* HUD OVERLAY */}
       <div className="absolute inset-0 z-20 pointer-events-none">
          {viewBox.w > 0 && visualCorners && (
            <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
-              {/* Main Boundary */}
               <path 
                 d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`} 
-                className="fill-cyan-400/10 stroke-[4px] stroke-cyan-400 transition-all duration-75" 
+                className="fill-cyan-400/5 stroke-[4px] stroke-cyan-400/60 transition-all duration-75" 
                 style={{ transform: `translate(${jitter.x}px, ${jitter.y}px)` }}
               />
               
-              {/* Sector: NAME */}
               <path 
                 d={getQuadPath(visualCorners, TARGET_REGIONS.name)} 
-                className="fill-cyan-500/20 stroke-2 stroke-white animate-pulse"
+                className="fill-cyan-500/10 stroke-1 stroke-white/40 animate-pulse"
               />
               <text 
                 x={getQuadPoint(visualCorners, TARGET_REGIONS.name.u, TARGET_REGIONS.name.v).x} 
-                y={getQuadPoint(visualCorners, TARGET_REGIONS.name.u, TARGET_REGIONS.name.v).y - 5}
-                className="fill-white font-orbitron font-black text-[12px] uppercase"
+                y={getQuadPoint(visualCorners, TARGET_REGIONS.name.u, TARGET_REGIONS.name.v).y - 8}
+                className="fill-white font-orbitron font-black text-[10px] uppercase tracking-wider"
               >
                 NAME_SECTOR
               </text>
 
-              {/* Sector: ID */}
               <path 
                 d={getQuadPath(visualCorners, TARGET_REGIONS.number)} 
-                className="fill-cyan-500/20 stroke-2 stroke-white animate-pulse"
+                className="fill-cyan-500/10 stroke-1 stroke-white/40 animate-pulse"
               />
               <text 
                 x={getQuadPoint(visualCorners, TARGET_REGIONS.number.u, TARGET_REGIONS.number.v).x} 
-                y={getQuadPoint(visualCorners, TARGET_REGIONS.number.u, TARGET_REGIONS.number.v).y - 5}
-                className="fill-white font-orbitron font-black text-[12px] uppercase"
+                y={getQuadPoint(visualCorners, TARGET_REGIONS.number.u, TARGET_REGIONS.number.v).y - 8}
+                className="fill-white font-orbitron font-black text-[10px] uppercase tracking-wider"
               >
                 ID_SECTOR
               </text>
 
-              {/* Corner Points */}
               {[visualCorners.tl, visualCorners.tr, visualCorners.bl, visualCorners.br].map((p, i) => (
-                <circle key={i} cx={p.x} cy={p.y} r="8" className="fill-white stroke-cyan-400 stroke-2" />
+                <g key={i}>
+                  <circle cx={p.x} cy={p.y} r="6" className="fill-white" />
+                  <circle cx={p.x} cy={p.y} r="12" className="fill-transparent stroke-cyan-400 stroke-1 animate-ping" />
+                </g>
               ))}
            </svg>
          )}
       </div>
 
-      {/* Status Indicators */}
       <div className="absolute top-8 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-4 w-full px-8">
-        <div className={`bg-slate-900/90 backdrop-blur-2xl border-2 border-white/10 rounded-2xl px-10 py-5 shadow-2xl flex items-center gap-6 transition-all duration-300 ${visualCorners ? 'border-cyan-400' : ''}`}>
+        <div className={`bg-slate-900/95 backdrop-blur-3xl border border-white/10 rounded-2xl px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300 ${visualCorners ? 'border-cyan-400/50 shadow-cyan-400/10' : ''}`}>
            <div className="flex flex-col">
-              <span className="text-[10px] font-orbitron font-black text-cyan-400 tracking-[0.3em] uppercase mb-1">
-                {visualCorners ? SCAN_STATUS_MESSAGES[statusIdx] : 'AWAITING_INPUT'}
+              <span className="text-[9px] font-orbitron font-black text-cyan-400 tracking-[0.4em] uppercase mb-1">
+                {visualCorners ? SCAN_STATUS_MESSAGES[statusIdx] : 'SEARCHING_ENVIRONMENT'}
               </span>
               <span className="text-xl md:text-2xl font-orbitron font-black text-white uppercase tracking-tighter">
-                {detectedData?.name || (isDeepScanning ? 'AI_NEURAL_PROCESSING...' : 'SEARCHING_ARCHIVES...')}
+                {detectedData?.name || (isDeepScanning ? 'AI_ARCHIVE_SYNC...' : 'AWAITING_LOCK...')}
               </span>
            </div>
         </div>
       </div>
 
-      {/* Success Notification */}
       {scanResult && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[70]">
-           <div className="bg-slate-950/98 backdrop-blur-3xl border-[6px] border-cyan-500/60 p-16 rounded-[4rem] shadow-[0_0_200px_rgba(34,211,238,0.4)] animate-in zoom-in-90 duration-300 text-center relative overflow-hidden ring-[20px] ring-white/5">
-              <div className="w-20 h-20 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-[0_0_40px_rgba(34,211,238,0.6)]">
-                <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
+           <div className="bg-slate-950/98 backdrop-blur-3xl border-4 border-cyan-500/40 p-12 rounded-[3rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
+              <div className="w-16 h-16 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
               </div>
-              <div className="text-4xl font-orbitron font-black text-white mb-4 uppercase tracking-tighter">{scanResult.name}</div>
-              <div className="bg-cyan-500 text-slate-950 py-2 px-10 rounded-full font-orbitron font-black uppercase text-xs tracking-widest">ASSET_SECURED</div>
+              <div className="text-3xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter">{scanResult.name}</div>
+              <div className="text-[10px] font-orbitron font-black text-cyan-400 tracking-widest uppercase">SYNCHRONIZED_TO_VAULT</div>
            </div>
         </div>
       )}
 
-      {/* Scanning Background Grid */}
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.05)_1px,transparent_1px)] bg-[size:60px_60px] pointer-events-none opacity-40 z-10" />
-
-      {/* Bottom Controls */}
-      <div className="absolute bottom-12 left-0 right-0 z-50 px-12 flex justify-between items-center pointer-events-none">
+      <div className="absolute bottom-12 left-0 right-0 z-50 px-12 flex justify-between items-center pointer-events-auto">
         <button 
           onClick={() => fileInputRef.current?.click()} 
-          className="pointer-events-auto backdrop-blur-3xl p-6 rounded-2xl border border-white/10 bg-slate-900/90 text-cyan-400 shadow-2xl transition-all active:scale-90"
+          className="backdrop-blur-3xl p-6 rounded-2xl border border-white/10 bg-slate-900/90 text-cyan-400 shadow-2xl transition-all active:scale-90"
         >
           <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -364,7 +357,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         {torchSupported && (
           <button 
             onClick={toggleTorch} 
-            className={`pointer-events-auto backdrop-blur-3xl p-6 rounded-2xl border border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white shadow-[0_0_30px_rgba(251,191,36,0.5)]' : 'bg-slate-900/90 text-slate-400'}`}
+            className={`backdrop-blur-3xl p-6 rounded-2xl border border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white' : 'bg-slate-900/90 text-slate-400'}`}
           >
             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
