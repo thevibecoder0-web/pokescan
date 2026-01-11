@@ -27,6 +27,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [scanResult, setScanResult] = useState<{name: string, price: string} | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   
+  // HUD Persistence Logic
+  const lastSeenTimeoutRef = useRef<number | null>(null);
+  
+  // Watchdog Timer: Reset system if stuck for 30 seconds
+  const watchdogTimerRef = useRef<number | null>(null);
+
   // Guard against duplicate vaulting and track verification state
   const lastVerifiedKey = useRef<string>("");
 
@@ -57,6 +63,54 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     if (isScanning) startCamera();
     else if (stream) stream.getTracks().forEach(t => t.stop());
   }, [isScanning]);
+
+  /**
+   * MANUAL RESET: Clear all locks and verification history
+   */
+  const handleReset = useCallback(() => {
+    lastVerifiedKey.current = "";
+    setScanResult(null);
+    setIsVerifying(false);
+    setDetectedData(null);
+    setCardRect(null);
+    setIsProcessing(false);
+    if (watchdogTimerRef.current) {
+      clearTimeout(watchdogTimerRef.current);
+      watchdogTimerRef.current = null;
+    }
+    console.log("Scanner System Reset Triggered");
+  }, []);
+
+  /**
+   * WATCHDOG: Monitor for stuck states
+   */
+  useEffect(() => {
+    const isActivelyScanning = (cardRect || isVerifying || isProcessing) && !scanResult;
+    
+    if (isActivelyScanning) {
+      // Start 30s countdown if not already running
+      if (!watchdogTimerRef.current) {
+        console.log("Watchdog Timer Started: 30s to resolution");
+        watchdogTimerRef.current = window.setTimeout(() => {
+          console.warn("Watchdog timeout reached. Performing emergency system reset.");
+          handleReset();
+        }, 30000);
+      }
+    } else {
+      // Clear timer if we are idle or succeeded
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+        console.log("Watchdog Timer Cleared: Resolution or Idle state reached");
+      }
+    }
+
+    return () => {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+      }
+    };
+  }, [cardRect, isVerifying, isProcessing, scanResult, handleReset]);
 
   /**
    * COMPUTER VISION: Locate Card via Edge & Color Contrast
@@ -108,7 +162,24 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         cnt.delete();
       }
 
-      setCardRect(bestRect);
+      if (bestRect) {
+        // Clear any pending timeout
+        if (lastSeenTimeoutRef.current) {
+          clearTimeout(lastSeenTimeoutRef.current);
+          lastSeenTimeoutRef.current = null;
+        }
+        setCardRect(bestRect);
+      } else {
+        // Card lost? Wait 1.5s before clearing detected data
+        setCardRect(null);
+        if (!lastSeenTimeoutRef.current) {
+          lastSeenTimeoutRef.current = window.setTimeout(() => {
+            setDetectedData(null);
+            lastSeenTimeoutRef.current = null;
+          }, 1500);
+        }
+      }
+
       src.delete(); dst.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {
       console.warn("CV Frame Processing Error - Skipping Frame");
@@ -122,29 +193,24 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     if (isVerifying || !data.name || !data.number) return;
     
     const verificationKey = `${data.name}-${data.number}`.toLowerCase();
-    // Don't re-verify the same card in one session unless it leaves view
     if (lastVerifiedKey.current === verificationKey) return;
     
     setIsVerifying(true);
     const { name, number } = data;
     
-    // Step 1: Check Local Hardcoded Registry (Instant Validation)
     let match = SURGING_SPARKS_DATA.find(c => 
       c.name.toLowerCase() === name.toLowerCase() && 
       c.number.includes(number)
     );
 
     try {
-      // Step 2: Global Database Sync via AI Grounding
       if (!match) {
         const aiResponse = await manualCardLookup(`${name} pokemon card #${number} official tcg data`);
-        // If AI confirms this is a real card with a valid set name
         if (aiResponse && aiResponse.name && aiResponse.set && aiResponse.set !== "Unknown Set") {
           match = aiResponse as any;
         }
       }
 
-      // Final Strict "Real Card" check
       if (match) {
         const finalCard: PokemonCard = {
           id: Math.random().toString(36).substring(7),
@@ -162,26 +228,21 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         setScanResult({ name: finalCard.name, price: finalCard.marketValue || '$??' });
         onCardDetected(finalCard);
         
-        // Success Cooldown
         setTimeout(() => {
           setScanResult(null);
           setIsVerifying(false);
         }, 3500);
       } else {
-        // If the card isn't "real" or found, reset and keep scanning
-        console.log("Card Verification Failed - Continuing Search...");
         setIsVerifying(false);
       }
     } catch (e) {
-      console.error("Verification Circuit Fault - Resetting Scan");
       setIsVerifying(false);
     }
   };
 
-  // Continuous Neural Loop
   useEffect(() => {
     let interval: number;
-    if (isScanning && cvReady && !isVerifying) {
+    if (isScanning && cvReady && !isVerifying && !scanResult) {
       interval = window.setInterval(async () => {
         detectCardWithCV();
 
@@ -192,36 +253,28 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           const cCtx = cardCanvas.getContext('2d');
           
           if (cCtx) {
-            // Adjust crop size to match detected card dimensions
             cardCanvas.width = cardRect.w;
             cardCanvas.height = cardRect.h;
             cCtx.drawImage(video, cardRect.x, cardRect.y, cardRect.w, cardRect.h, 0, 0, cardRect.w, cardRect.h);
-            
             const result = await extractNameLocally(cardCanvas);
             setDetectedData(result);
-            
-            // STRICT AUTO-ADD: Requires Dual-Lock (Name + Number)
             if (result && result.name && result.number) {
               verifyAndVault(result);
             }
           }
           setIsProcessing(false);
-        } else if (!cardRect) {
-          setDetectedData(null);
-          // If card leaves view, reset the last verified key so it can be scanned again if brought back
-          lastVerifiedKey.current = "";
         }
       }, 400);
     }
     return () => clearInterval(interval);
-  }, [isScanning, cvReady, isVerifying, cardRect, isProcessing]);
+  }, [isScanning, cvReady, isVerifying, cardRect, isProcessing, scanResult]);
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
       {/* HUD: Neural Edge & Asset Tracker */}
-      {cardRect && !isVerifying && (
+      {cardRect && !isVerifying && !scanResult && (
         <div 
           style={{
             left: `${(cardRect.x / videoRef.current!.videoWidth) * 100}%`,
@@ -258,8 +311,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         </div>
       )}
 
-      {/* Verification / Success Modals */}
+      {/* Global Status Layers */}
       <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-50">
+        
+        {/* Verification Stage */}
         {isVerifying && !scanResult && (
             <div className="flex flex-col items-center animate-in fade-in zoom-in duration-300">
                 <div className="relative">
@@ -273,6 +328,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             </div>
         )}
 
+        {/* Success Stage */}
         {scanResult && (
            <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-green-500/50 p-24 rounded-[6rem] shadow-[0_0_180px_rgba(34,197,94,0.4)] animate-in zoom-in-90 duration-500 text-center relative overflow-hidden">
               <div className="absolute top-0 left-0 w-full h-2 bg-green-500 shadow-[0_0_20px_rgba(34,197,94,1)] animate-pulse"></div>
@@ -287,17 +343,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 </div>
               </div>
            </div>
-        )}
-
-        {!cardRect && !isVerifying && !scanResult && (
-          <div className="bg-slate-950/90 backdrop-blur-3xl border border-white/5 px-14 py-12 rounded-[5rem] text-center shadow-[0_0_100px_rgba(0,0,0,0.8)] animate-in slide-in-from-bottom-16 duration-1000">
-             <div className="relative w-16 h-16 mx-auto mb-10">
-                <div className="absolute inset-0 border-4 border-white/5 border-t-cyan-500 rounded-full animate-spin"></div>
-                <div className="absolute inset-2 border-2 border-white/5 border-b-purple-500 rounded-full animate-spin-slow"></div>
-             </div>
-             <p className="text-white font-orbitron font-bold text-lg uppercase tracking-[0.5em] mb-4">Neural Scanner Active</p>
-             <p className="text-slate-500 text-[10px] uppercase tracking-[0.2em] max-w-[280px] mx-auto leading-relaxed">Position a Pokémon Card in the scan zone. Requires clear Name and Set Number visibility for authenticity verification.</p>
-          </div>
         )}
       </div>
 
@@ -322,16 +367,28 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
            </div>
         </div>
 
-        {!isVerifying && !scanResult && (
-            <div className="bg-slate-900/50 backdrop-blur-xl px-10 py-6 rounded-[3rem] border border-white/5 flex flex-col items-center gap-3">
-                <span className="text-[11px] font-orbitron font-black text-white/40 uppercase tracking-[0.4em]">Ready for Verification</span>
-                <div className="flex gap-3">
-                    <div className="w-2 h-2 bg-cyan-500/40 rounded-full animate-bounce"></div>
-                    <div className="w-2 h-2 bg-cyan-500/60 rounded-full animate-bounce [animation-delay:200ms]"></div>
-                    <div className="w-2 h-2 bg-cyan-500/80 rounded-full animate-bounce [animation-delay:400ms]"></div>
+        <div className="flex flex-col items-end gap-4">
+            {!isVerifying && !scanResult && (
+                <div className="bg-slate-900/50 backdrop-blur-xl px-10 py-6 rounded-[3rem] border border-white/5 flex flex-col items-center gap-3 animate-in fade-in duration-300">
+                    <span className="text-[11px] font-orbitron font-black text-white/40 uppercase tracking-[0.4em]">Ready for Verification</span>
+                    <div className="flex gap-3">
+                        <div className="w-2 h-2 bg-cyan-500/40 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-cyan-500/60 rounded-full animate-bounce [animation-delay:200ms]"></div>
+                        <div className="w-2 h-2 bg-cyan-500/80 rounded-full animate-bounce [animation-delay:400ms]"></div>
+                    </div>
                 </div>
-            </div>
-        )}
+            )}
+            
+            <button 
+                onClick={handleReset}
+                className="pointer-events-auto bg-slate-900/80 hover:bg-red-600 backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group"
+                title="System Reset"
+            >
+                <svg className="w-8 h-8 text-white group-hover:rotate-180 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+            </button>
+        </div>
       </div>
 
       <canvas ref={canvasRef} className="hidden" />
