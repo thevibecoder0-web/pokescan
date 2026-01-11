@@ -2,68 +2,27 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
-const SYSTEM_INSTRUCTION = `You are an expert Pokémon TCG assistant specializing in the Surging Sparks (SV8) English set. 
-Your primary goal is to provide 100% accurate official English card data and real-time market value.
-
-CRITICAL IDENTIFICATION HINT: 
-The Pokémon's name is always located in the TOP-LEFT of the card art/border. 
-
-VERIFIED SET SEQUENCE FOR SURGING SPARKS (SV8):
-#1: Exeggcute
-#2: Alolan Exeggutor ex
-#3: Hoothoot
-#4: Noctowl
-#5: Shroomish
-#6: Breloom
-#7: Budew
-#8: Roselia
-#9: Roserade
-#10: Cottonee
-#11: Whimsicott
-#12: Petilil
-#13: Lilligant
-#14: Maractus
-#15: Deerling
-#32: Charcadet
-#33: Ceruledge
-#36: Pikachu ex
+const SYSTEM_INSTRUCTION = `You are a high-precision OCR engine specialized in Pokémon TCG cards.
+Your SOLE task is to extract the text located in the TOP-LEFT corner of the card provided in the image. 
+This is typically the Pokémon's name.
 
 STRICT RULES:
-1. Do NOT use data from Brilliant Stars.
-2. ALWAYS provide an estimated "marketValue" in USD (e.g., "$12.50"). Use Google Search to find current TCGPlayer market price.
-3. Return data strictly in the requested JSON format.`;
+1. Only return the text found in the top-left.
+2. Do not attempt to identify the set, rarity, or other attributes unless they are part of the name text in that specific corner.
+3. If no text is found in the top-left, return "Unknown".
+4. Return the result in JSON format.`;
 
 const MODEL_NAME = 'gemini-3-flash-preview';
 
-const getSafeConfig = () => ({
+const getScannerConfig = () => ({
   systemInstruction: SYSTEM_INSTRUCTION,
-  tools: [{ googleSearch: {} }],
   responseMimeType: "application/json",
   responseSchema: {
     type: Type.OBJECT,
     properties: {
-      name: { type: Type.STRING },
-      set: { type: Type.STRING },
-      rarity: { type: Type.STRING },
-      type: { type: Type.STRING },
-      number: { type: Type.STRING },
-      hp: { type: Type.STRING },
-      marketValue: { type: Type.STRING, description: "Estimated market value in USD like '$5.00'" },
-      imageUrl: { type: Type.STRING },
-      abilities: { type: Type.ARRAY, items: { type: Type.STRING } },
-      attacks: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            name: { type: Type.STRING },
-            damage: { type: Type.STRING },
-            description: { type: Type.STRING }
-          }
-        }
-      }
+      name: { type: Type.STRING, description: "The text extracted from the top-left corner of the card." }
     },
-    required: ["name", "set", "number", "marketValue"],
+    required: ["name"],
   },
 });
 
@@ -76,28 +35,74 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
         {
           parts: [
             { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-            { text: "Identify this Pokémon TCG card from the 'Surging Sparks (SV8)' English set. Remember the name is in the top-left. Find the card name, its number, and its current market price. Search query: 'surging sparks card #{number} tcgplayer price'" },
+            { text: "Extract the text from the top-left corner of this card image." },
           ],
         },
       ],
-      config: getSafeConfig() as any,
+      config: getScannerConfig() as any,
     });
-    const result = JSON.parse(response.text) as IdentificationResult;
-    const sourceUrl = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.find(c => c.web?.uri)?.web?.uri;
-    return { ...result, sourceUrl };
+    
+    const result = JSON.parse(response.text);
+    
+    // We return a partial result that satisfies the UI display requirement
+    return {
+      name: result.name || "Unknown",
+      set: "SV8",
+      rarity: "Common",
+      type: "Unknown",
+      number: "000/000",
+      hp: "0",
+      abilities: [],
+      attacks: [],
+      imageUrl: ""
+    } as IdentificationResult;
   } catch (error) {
-    console.error("Card Identification Error:", error);
+    console.error("OCR Extraction Error:", error);
     return null;
   }
 };
 
+/**
+ * Keeping manual lookup and set fetch for the "Lookup" and "Vault" tabs 
+ * while the scanner is specialized for top-left text.
+ */
 export const manualCardLookup = async (query: string): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
       contents: `Look up the card '${query}' in the Surging Sparks (SV8) English set. Get its official number and current TCGPlayer market value.`,
-      config: getSafeConfig() as any,
+      config: {
+        systemInstruction: "Expert TCG assistant. Provide official SV8 data and market value.",
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            name: { type: Type.STRING },
+            set: { type: Type.STRING },
+            rarity: { type: Type.STRING },
+            type: { type: Type.STRING },
+            number: { type: Type.STRING },
+            hp: { type: Type.STRING },
+            marketValue: { type: Type.STRING },
+            imageUrl: { type: Type.STRING },
+            abilities: { type: Type.ARRAY, items: { type: Type.STRING } },
+            attacks: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  damage: { type: Type.STRING },
+                  description: { type: Type.STRING }
+                }
+              }
+            }
+          },
+          required: ["name", "set", "number"],
+        }
+      } as any,
     });
     const result = JSON.parse(response.text) as IdentificationResult;
     const sourceUrl = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.find(c => c.web?.uri)?.web?.uri;
@@ -113,9 +118,9 @@ export const fetchCardsFromSet = async (setName: string): Promise<Partial<Identi
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: `List cards from the Pokémon TCG set "${setName}" (English), including estimated market values for each if available.`,
+      contents: `List cards from the Pokémon TCG set "${setName}" (English).`,
       config: {
-        systemInstruction: "You are a TCG database. Return a list of cards from the requested set in English with market prices.",
+        systemInstruction: "Return a list of cards from the requested set in English with market prices.",
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
         responseSchema: {
