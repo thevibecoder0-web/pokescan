@@ -322,11 +322,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }, 1500);
   };
 
-  /**
-   * PERSPECTIVE WARP PIPELINE:
-   * Transforms the skewed card image into a flat, normalized rectangle.
-   * This provides the OCR engine with perfectly aligned text regions.
-   */
   const processNeuralCrop = async () => {
     if (!targetCorners || !cvReady || !videoRef.current || !cardCanvasRef.current) return;
 
@@ -336,7 +331,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     try {
       let src = cv.imread(video);
       let dst = new cv.Mat();
-      let dsize = new cv.Size(400, 560); // Standard Card Ratio
+      let dsize = new cv.Size(400, 560);
 
       let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
         targetCorners.tl.x, targetCorners.tl.y,
@@ -355,12 +350,14 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
 
-      // Draw standard warped card to canvas for OCR
       cv.imshow(cardCanvasRef.current, dst);
 
       const result = await extractNameLocally(cardCanvasRef.current);
-      if (result && result.name && result.number) {
-        instantVault(result);
+      if (result) {
+        setDetectedData(result);
+        if (result.name && result.number) {
+          instantVault(result);
+        }
       }
 
       src.delete(); dst.delete(); M.delete(); srcCoords.delete(); dstCoords.delete();
@@ -388,6 +385,36 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
+      {/* Neural Status Hub (New 50% Transparent Overlay) */}
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 w-[90%] max-w-lg z-50">
+        <div className="bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-2xl flex flex-col items-center gap-1 transition-all duration-500 animate-in slide-in-from-top-4">
+          <div className="flex items-center gap-3 w-full">
+            <div className={`w-2 h-2 rounded-full animate-pulse ${detectedData?.name ? 'bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,1)]' : 'bg-slate-600'}`} />
+            <span className="text-[10px] font-orbitron font-black text-slate-400 uppercase tracking-[0.3em]">Neural_Feeds_Status:</span>
+            <span className={`text-[10px] font-orbitron font-black uppercase ${detectedData?.name ? 'text-cyan-400' : 'text-slate-500 animate-pulse'}`}>
+              {detectedData?.name ? 'IDENTIFIED' : 'SCANNING_ENVIRONMENT...'}
+            </span>
+          </div>
+          
+          <div className="w-full h-px bg-white/5 my-1" />
+          
+          <div className="flex justify-between items-center w-full px-1">
+            <div className="flex flex-col">
+              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Target_ID</span>
+              <span className="text-sm font-orbitron font-bold text-white uppercase truncate max-w-[200px]">
+                {detectedData?.name || '---'}
+              </span>
+            </div>
+            <div className="text-right flex flex-col">
+              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Asset_Num</span>
+              <span className="text-sm font-orbitron font-bold text-cyan-400">
+                {detectedData?.number ? `#${detectedData.number}` : '---'}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {visualCorners && viewBox.w > 0 && !scanResult && (
         <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden animate-in fade-in duration-300">
           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
@@ -399,22 +426,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 <circle key={i} cx={p.x} cy={p.y} r="8" className="fill-cyan-400 stroke-black stroke-2" />
              ))}
           </svg>
-
-          <div 
-            style={{ left: `${(visualCorners.tl.x / viewBox.w) * 100}%`, top: `${(visualCorners.tl.y / viewBox.h) * 100}%` }}
-            className="absolute -translate-y-28 translate-x-4 flex flex-col gap-2 scale-90 sm:scale-100"
-          >
-             <div className="flex gap-2">
-                <span className={`px-4 py-2 text-[12px] font-orbitron font-black uppercase rounded-lg shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
-                  {detectedData?.name || 'NEURAL_LOCKING...'}
-                </span>
-             </div>
-             {detectedData?.number && (
-               <div className="bg-white/10 backdrop-blur-md border border-white/20 px-4 py-1.5 rounded-lg inline-block self-start">
-                  <span className="text-[10px] font-orbitron font-bold text-white uppercase tracking-widest">#{detectedData.number}</span>
-               </div>
-             )}
-          </div>
         </div>
       )}
 
