@@ -17,6 +17,8 @@ interface ScannerProps {
 
 const TARGET_RATIO = 0.716;
 const RATIO_TOLERANCE = 0.15; 
+const MAX_STABILITY = 40;
+const QUALITY_THRESHOLD = 0.75; // 75% quality trigger
 
 // Centiskorch 30/132 from Darkness Ablaze - Requested default fallback image
 const DEFAULT_UNFOUND_IMAGE = "https://images.pokemontcg.io/swsh3/30_hires.png";
@@ -246,7 +248,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       if (found) { 
         setTargetCorners(found);
-        setStabilityScore(s => Math.min(s + 1, 40));
+        setStabilityScore(s => Math.min(s + 1, MAX_STABILITY));
         
         if (lockStartTimeRef.current === 0) {
             lockStartTimeRef.current = Date.now();
@@ -261,11 +263,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             }
         }
         
-        // Use AI to detect text and identify the card. 
-        // We feed the warped high-res crop for maximum readability.
-        if (stabilityScore > 12 && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 5000) {
+        // CONDITION: after the quality of the card scan is over 75% it takes a picture of the camera, and analyzes it for the name
+        // 75% of MAX_STABILITY (40) is 30.
+        if (stabilityScore >= (MAX_STABILITY * QUALITY_THRESHOLD) && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 4000) {
           if (cardCanvasRef.current) {
-            const snapshot = cardCanvasRef.current.toDataURL('image/jpeg', 0.9);
+            const snapshot = cardCanvasRef.current.toDataURL('image/jpeg', 0.95);
             processAILookup(snapshot.split(',')[1]);
           }
         }
@@ -332,6 +334,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return () => clearInterval(int);
   }, [isScanning, cvReady, targetCorners, detectCardWithCV, runLocalOCR]);
 
+  const currentQuality = Math.round((stabilityScore / MAX_STABILITY) * 100);
+
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
@@ -353,7 +357,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
               <g className="font-orbitron font-black text-[10px] fill-cyan-400 tracking-[0.3em]">
                 <text x={visualCorners.tl.x} y={visualCorners.tl.y - 15}>TARGET_LOCKED</text>
-                <text x={visualCorners.bl.x} y={visualCorners.bl.y + 25}>AI_SIGNAL_STRENGTH: {Math.round(stabilityScore * 2.5)}%</text>
+                <text x={visualCorners.bl.x} y={visualCorners.bl.y + 25}>STABILITY: {currentQuality}%</text>
               </g>
 
               <g className="fill-white stroke-cyan-500 stroke-2">
@@ -374,12 +378,22 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               <div className="flex items-center justify-center gap-3 mb-2">
                 <div className={`w-2 h-2 rounded-full ${visualCorners ? 'bg-cyan-400 animate-pulse shadow-[0_0_10px_cyan]' : 'bg-slate-700'}`} />
                 <span className="text-[10px] font-orbitron font-black text-cyan-500 tracking-[0.6em] uppercase">
-                  {stabilityScore > 15 ? 'DECODING_VISUAL_SIGNALS' : 'SCANNING_ENVIRONMENT'}
+                  {stabilityScore >= 30 ? 'OPTIMAL_NEURAL_SYNC' : (visualCorners ? 'CALIBRATING_SENSORS' : 'SCANNING_ENVIRONMENT')}
                 </span>
               </div>
               <h2 className="text-3xl md:text-4xl font-orbitron font-black text-white uppercase tracking-tighter max-w-lg truncate">
                 {detectedData?.name || (isDeepScanning ? 'AI_NEURAL_RECOGNITION...' : (isProcessingLocal ? 'EXTRACTING_TEXT...' : 'POSITION_TARGET'))}
               </h2>
+              
+              {/* Quality Bar */}
+              {visualCorners && (
+                <div className="mt-4 w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full transition-all duration-300 ${stabilityScore >= 30 ? 'bg-cyan-400 shadow-[0_0_10px_cyan]' : 'bg-slate-400'}`} 
+                    style={{ width: `${currentQuality}%` }} 
+                  />
+                </div>
+              )}
            </div>
         </div>
       </div>
