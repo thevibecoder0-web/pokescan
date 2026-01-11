@@ -35,6 +35,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
   
+  // Adaptive Exposure State
+  const [exposureBias, setExposureBias] = useState(0);
+  const lastAdjustmentTime = useRef<number>(0);
+
   // Logical corners (snapping points)
   const [targetCorners, setTargetCorners] = useState<CardCorners | null>(null);
   // Visual corners (smoothed points)
@@ -86,11 +90,60 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   };
 
   /**
-   * REFINED TORCH LOGIC:
-   * Instead of just toggling the LED, we also attempt to adjust exposure compensation.
-   * By lowering the exposure when the torch is on, we prevent the "light shining off the card" (glare blowout)
-   * while still benefiting from the increased illumination in the room.
+   * GLARE MITIGATION ENGINE:
+   * Analyzes pixels to detect overexposed regions.
+   * Adjusts exposureCompensation dynamically to "dim" the glare without losing details.
    */
+  const adjustExposureForGlare = useCallback(async (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    if (!stream || !isTorchOn || Date.now() - lastAdjustmentTime.current < 500) return;
+
+    const track = stream.getVideoTracks()[0];
+    const capabilities = (track as any).getCapabilities?.() || {};
+    if (!capabilities.exposureCompensation) return;
+
+    // Sample a grid of pixels to check for glare (luminance > 235)
+    const imageData = ctx.getImageData(0, 0, width, height).data;
+    let blownOutPixels = 0;
+    let totalLuminance = 0;
+    const step = 8; // Performance optimization: sample every 8th pixel
+    
+    for (let i = 0; i < imageData.length; i += 4 * step) {
+      const r = imageData[i];
+      const g = imageData[i+1];
+      const b = imageData[i+2];
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      totalLuminance += lum;
+      if (lum > 235) blownOutPixels++;
+    }
+
+    const totalSamples = imageData.length / (4 * step);
+    const glareRatio = blownOutPixels / totalSamples;
+    const avgLuminance = totalLuminance / totalSamples;
+
+    let targetBias = exposureBias;
+    const stepSize = 0.5;
+
+    // Logic: If glare is > 5% of the frame, drop exposure.
+    // If average luminance is < 80 (very dark) and glare is low, increase exposure.
+    if (glareRatio > 0.05) {
+      targetBias = Math.max(capabilities.exposureCompensation.min || -2.0, exposureBias - stepSize);
+    } else if (avgLuminance < 80 && glareRatio < 0.01) {
+      targetBias = Math.min(capabilities.exposureCompensation.max || 2.0, exposureBias + stepSize);
+    }
+
+    if (targetBias !== exposureBias) {
+      try {
+        await track.applyConstraints({
+          advanced: [{ exposureCompensation: targetBias }]
+        } as any);
+        setExposureBias(targetBias);
+        lastAdjustmentTime.current = Date.now();
+      } catch (e) {
+        console.warn("Neural Exposure Correction Failed");
+      }
+    }
+  }, [stream, isTorchOn, exposureBias]);
+
   const toggleTorch = async () => {
     if (!stream || !torchSupported) return;
     const track = stream.getVideoTracks()[0];
@@ -98,23 +151,14 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     
     try {
       const newTorchState = !isTorchOn;
-      
       const advancedConstraints: any = { torch: newTorchState };
       
-      // If torch is being turned ON, attempt to reduce exposure compensation to mitigate glare
-      if (newTorchState && capabilities.exposureCompensation) {
-        // Apply a negative compensation (e.g., -1.5 or the minimum supported)
-        const minComp = capabilities.exposureCompensation.min || -2.0;
-        advancedConstraints.exposureCompensation = Math.max(minComp, -1.5);
-      } else if (!newTorchState && capabilities.exposureCompensation) {
-        // Reset exposure to neutral when torch is OFF
+      if (!newTorchState) {
         advancedConstraints.exposureCompensation = 0;
+        setExposureBias(0);
       }
 
-      await track.applyConstraints({
-        advanced: [advancedConstraints]
-      } as any);
-      
+      await track.applyConstraints({ advanced: [advancedConstraints] } as any);
       setIsTorchOn(newTorchState);
     } catch (e) {
       console.error("Neural Light Control Failure:", e);
@@ -171,6 +215,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     canvas.width = video.videoWidth / 2;
     canvas.height = video.videoHeight / 2;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Call glare mitigation if torch is active
+    if (isTorchOn) {
+      adjustExposureForGlare(context, canvas.width, canvas.height);
+    }
 
     try {
       let src = cv.imread(canvas);
@@ -249,7 +298,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     } catch (e) {
       console.warn("CV Frame Failure");
     }
-  }, [cvReady]);
+  }, [cvReady, isTorchOn, adjustExposureForGlare]);
 
   const instantVault = async (data: OCRResult) => {
     if (!data.name || !data.number) return;
@@ -378,8 +427,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         <div className="absolute bottom-10 right-10 flex flex-col gap-4">
           <button 
               onClick={toggleTorch}
-              className={`pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group ${isTorchOn ? 'bg-amber-400 text-white' : 'bg-slate-900/90 text-slate-400'}`}
-              title={isTorchOn ? "Neural Light: ACTIVE (Low Exposure)" : "Neural Light: OFF"}
+              className={`pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group relative ${isTorchOn ? 'bg-amber-400 text-white' : 'bg-slate-900/90 text-slate-400'}`}
+              title={isTorchOn ? "Neural Light: ACTIVE (Adaptive Exposure)" : "Neural Light: OFF"}
           >
               <svg className={`w-8 h-8 transition-transform ${isTorchOn ? 'scale-110' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
@@ -388,8 +437,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                   )}
               </svg>
               {isTorchOn && (
-                <div className="absolute -top-2 -right-2 w-6 h-6 bg-cyan-400 rounded-full flex items-center justify-center animate-pulse border-2 border-slate-900">
-                    <span className="text-[8px] font-black text-slate-900">SOFT</span>
+                <div className="absolute -top-3 -right-3 px-2 py-1 bg-cyan-400 rounded-lg shadow-xl border-2 border-slate-900 flex items-center gap-1">
+                    <div className="w-1.5 h-1.5 rounded-full bg-slate-900 animate-pulse" />
+                    <span className="text-[8px] font-black text-slate-900 uppercase">EV {exposureBias > 0 ? `+${exposureBias.toFixed(1)}` : exposureBias.toFixed(1)}</span>
                 </div>
               )}
           </button>
