@@ -36,9 +36,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [detectedData, setDetectedData] = useState<OCRResult | null>(null);
   const [cvReady, setCvReady] = useState(false);
   
-  // New: Independent Corner State
+  // Perspective & Lock State
   const [corners, setCorners] = useState<CardCorners | null>(null);
   const [viewBox, setViewBox] = useState({ w: 0, h: 0 });
+  const [identificationStartTime, setIdentificationStartTime] = useState<number | null>(null);
+  const [lockProgress, setLockProgress] = useState(100);
   
   const [scanResult, setScanResult] = useState<{name: string, price: string} | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -86,6 +88,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     setIsVerifying(false);
     setDetectedData(null);
     setCorners(null);
+    setIdentificationStartTime(null);
+    setLockProgress(100);
     setIsProcessing(false);
     if (watchdogTimerRef.current) {
       clearTimeout(watchdogTimerRef.current);
@@ -93,22 +97,32 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }
   }, []);
 
-  useEffect(() => {
-    const isActivelyScanning = (corners || isVerifying || isProcessing) && !scanResult;
-    if (isActivelyScanning && !watchdogTimerRef.current) {
-      watchdogTimerRef.current = window.setTimeout(() => handleReset(), 30000);
-    } else if (!isActivelyScanning && watchdogTimerRef.current) {
-      clearTimeout(watchdogTimerRef.current);
-      watchdogTimerRef.current = null;
-    }
-    return () => { if (watchdogTimerRef.current) clearTimeout(watchdogTimerRef.current); };
-  }, [corners, isVerifying, isProcessing, scanResult, handleReset]);
-
   /**
-   * COMPUTER VISION: Vertex Extraction with Extreme-Point Matching
+   * LOCK EXPIRY LOGIC
+   * If we've been trying to identify the current corner snap for > 5s,
+   * we release the lock and find a new one.
    */
+  useEffect(() => {
+    if (identificationStartTime && corners && !scanResult && !isVerifying) {
+      const timer = setInterval(() => {
+        const elapsed = Date.now() - identificationStartTime;
+        const remaining = Math.max(0, 100 - (elapsed / 5000) * 100);
+        setLockProgress(remaining);
+
+        if (elapsed > 5000) {
+          console.log("Identification Timeout: Re-acquiring perspective lock...");
+          setCorners(null);
+          setIdentificationStartTime(null);
+          setDetectedData(null);
+          setLockProgress(100);
+        }
+      }, 100);
+      return () => clearInterval(timer);
+    }
+  }, [identificationStartTime, corners, scanResult, isVerifying]);
+
   const detectCardWithCV = useCallback(() => {
-    if (!cvReady || !videoRef.current || !canvasRef.current) return;
+    if (!cvReady || !videoRef.current || !canvasRef.current || corners) return; // Don't search if already locked
     
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -142,12 +156,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
         
-        if (area > (canvas.width * canvas.height * 0.08)) {
+        if (area > (canvas.width * canvas.height * 0.1)) {
           let approx = new cv.Mat();
           let peri = cv.arcLength(cnt, true);
           cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
-          // Find a 4-point quadrilateral
           if (approx.rows === 4) {
             let pts: Point[] = [];
             for (let j = 0; j < 4; j++) {
@@ -157,8 +170,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               });
             }
 
-            // Map points to specific corners
-            // Sum (x+y) helps find TL/BR, Diff (y-x) helps find TR/BL
             const sortedBySum = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
             const sortedByDiff = [...pts].sort((a, b) => (a.y - a.x) - (b.y - b.x));
 
@@ -169,13 +180,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               bl: sortedByDiff[3]
             };
 
-            // Calculate current width/height for ratio check
             const widthTop = Math.hypot(potentialCorners.tr.x - potentialCorners.tl.x, potentialCorners.tr.y - potentialCorners.tl.y);
             const heightLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
             const ratio = widthTop / heightLeft;
 
-            // Tolerance check for TCG cards (63/88mm = 0.71)
-            if (ratio > 0.55 && ratio < 0.90) {
+            if (ratio > 0.60 && ratio < 0.85) {
               if (area > maxArea) {
                 maxArea = area;
                 foundCorners = potentialCorners;
@@ -188,26 +197,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       }
 
       if (foundCorners) {
-        if (lastSeenTimeoutRef.current) {
-          clearTimeout(lastSeenTimeoutRef.current);
-          lastSeenTimeoutRef.current = null;
-        }
         setCorners(foundCorners);
-      } else {
-        if (!lastSeenTimeoutRef.current) {
-          lastSeenTimeoutRef.current = window.setTimeout(() => {
-            setCorners(null);
-            setDetectedData(null);
-            lastSeenTimeoutRef.current = null;
-          }, 600);
-        }
+        setIdentificationStartTime(Date.now());
       }
 
       src.delete(); dst.delete(); gray.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {
-      console.warn("CV Engine Error:", e);
+      console.warn("CV Frame Lock Error");
     }
-  }, [cvReady]);
+  }, [cvReady, corners]);
 
   const verifyAndVault = async (data: OCRResult) => {
     if (isVerifying || !data.name || !data.number) return;
@@ -224,7 +222,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
     try {
       if (!match) {
-        const aiResponse = await manualCardLookup(`${name} pokemon card #${number} market price`);
+        const aiResponse = await manualCardLookup(`${name} pokemon card #${number} tcg market price`);
         if (aiResponse && aiResponse.name && aiResponse.set && aiResponse.set !== "Unknown Set") {
           match = aiResponse as any;
         }
@@ -250,6 +248,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         setTimeout(() => {
           setScanResult(null);
           setIsVerifying(false);
+          setCorners(null);
+          setIdentificationStartTime(null);
         }, 3500);
       } else {
         setIsVerifying(false);
@@ -272,7 +272,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           const cCtx = cardCanvas.getContext('2d');
           
           if (cCtx) {
-            // Find bounding box for OCR
+            // High-Res extraction from the locked perspective
             const minX = Math.min(corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x);
             const maxX = Math.max(corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x);
             const minY = Math.min(corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y);
@@ -305,61 +305,56 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
-      {/* 4-POINT INDEPENDENT PERSPECTIVE HUD */}
-      {corners && !isVerifying && !scanResult && viewBox.w > 0 && (
+      {/* HUD: Perspective Locked Mesh */}
+      {corners && viewBox.w > 0 && !scanResult && (
         <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
-             {/* Dynamic Mesh Path */}
              <path 
                 d={`M ${corners.tl.x} ${corners.tl.y} L ${corners.tr.x} ${corners.tr.y} L ${corners.br.x} ${corners.br.y} L ${corners.bl.x} ${corners.bl.y} Z`}
-                className={`fill-transparent stroke-[3px] transition-all duration-100 ease-linear ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.8)]' : 'stroke-white/40'}`}
+                className={`fill-transparent stroke-[4px] transition-all duration-300 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,1)]' : 'stroke-white/60 animate-pulse'}`}
              />
              
-             {/* Individual Vertex Trackers */}
-             {[
-               { p: corners.tl, label: "TL" },
-               { p: corners.tr, label: "TR" },
-               { p: corners.bl, label: "BL" },
-               { p: corners.br, label: "BR" }
-             ].map((node, i) => (
-                <g key={i} transform={`translate(${node.p.x}, ${node.p.y})`} className="transition-transform duration-75">
-                   <circle r="6" className={`fill-black stroke-2 ${detectedData?.name ? 'stroke-cyan-400' : 'stroke-white'}`} />
-                   <circle r="12" className={`fill-transparent stroke-1 animate-pulse ${detectedData?.name ? 'stroke-cyan-400/50' : 'stroke-white/20'}`} />
-                   <text y="-12" textAnchor="middle" className="text-[10px] font-orbitron font-black fill-white/50 tracking-tighter">{node.label}</text>
-                </g>
+             {[corners.tl, corners.tr, corners.bl, corners.br].map((p, i) => (
+                <circle key={i} cx={p.x} cy={p.y} r="8" className="fill-cyan-400 stroke-black stroke-2" />
              ))}
           </svg>
 
-          {/* Info Flyout tied to Top-Left Vertex */}
+          {/* Sync Timer Bar */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 translate-y-32 w-48 bg-slate-900/80 backdrop-blur-xl border border-white/10 p-1.5 rounded-full shadow-2xl overflow-hidden">
+             <div 
+                className="h-1 bg-cyan-400 rounded-full transition-all duration-100 ease-linear shadow-[0_0_10px_rgba(34,211,238,1)]" 
+                style={{ width: `${lockProgress}%` }}
+             />
+             <div className="mt-2 text-center text-[7px] font-orbitron font-black text-cyan-400 uppercase tracking-widest">
+                PERSPECTIVE_LOCK_SESSION
+             </div>
+          </div>
+
           <div 
             style={{ left: `${(corners.tl.x / viewBox.w) * 100}%`, top: `${(corners.tl.y / viewBox.h) * 100}%` }}
             className="absolute -translate-y-24 translate-x-4 flex flex-col gap-2 scale-90 sm:scale-100"
           >
              <div className="flex gap-2">
                 <span className={`px-3 py-1.5 text-[11px] font-orbitron font-black uppercase rounded shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
-                  {detectedData?.name || 'SYNCING...'}
-                </span>
-                <span className={`px-3 py-1.5 text-[11px] font-orbitron font-black uppercase rounded shadow-2xl backdrop-blur-md ${detectedData?.number ? 'bg-purple-600 text-white' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
-                  {detectedData?.number ? `#${detectedData.number}` : 'LOCKED?'}
+                  {detectedData?.name || 'ANALYZING_CORE...'}
                 </span>
              </div>
-             {detectedData?.name && detectedData.number && (
-                <div className="bg-cyan-500/20 backdrop-blur-xl border border-cyan-500/30 px-3 py-1.5 rounded-lg flex items-center gap-2 animate-in slide-in-from-left-4">
+             {isProcessing && (
+                <div className="bg-cyan-500/20 backdrop-blur-xl border border-cyan-500/30 px-3 py-1.5 rounded-lg flex items-center gap-2">
                    <div className="w-2 h-2 bg-cyan-400 rounded-full animate-ping"></div>
-                   <span className="text-[9px] font-orbitron text-cyan-400 font-bold uppercase tracking-widest">Vertex_Lock_Success_</span>
+                   <span className="text-[9px] font-orbitron text-cyan-400 font-bold uppercase tracking-widest">Warping_Visual_Buffer_</span>
                 </div>
              )}
           </div>
         </div>
       )}
 
-      {/* Overlays */}
+      {/* Success/Verification Screens */}
       <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-50">
         {isVerifying && !scanResult && (
             <div className="flex flex-col items-center animate-in fade-in zoom-in duration-300">
                 <div className="w-32 h-32 border-4 border-cyan-400 border-solid border-t-transparent rounded-full animate-spin shadow-[0_0_80px_rgba(34,211,238,0.3)]"></div>
-                <div className="mt-12 text-cyan-400 font-orbitron font-black text-2xl tracking-[0.6em] animate-pulse uppercase">Neural_Verifying</div>
-                <p className="text-slate-500 text-[11px] uppercase font-black tracking-widest mt-4">Cross-referencing vertex data with archives</p>
+                <div className="mt-12 text-cyan-400 font-orbitron font-black text-2xl tracking-[0.6em] animate-pulse uppercase">Asset_Registry_Check</div>
             </div>
         )}
 
@@ -372,29 +367,31 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 <div className="text-5xl font-orbitron font-black text-white mb-3 uppercase tracking-tighter drop-shadow-2xl">{scanResult.name}</div>
                 <div className="text-4xl font-orbitron text-green-400 font-bold tracking-tight mb-8">{scanResult.price}</div>
                 <div className="bg-green-500/20 text-green-400 py-3 px-10 rounded-full border border-green-500/30 inline-block">
-                    <span className="text-[12px] font-orbitron font-black uppercase tracking-[0.4em]">Vault_Entry_Confirmed</span>
+                    <span className="text-[12px] font-orbitron font-black uppercase tracking-[0.4em]">Vault_Secured</span>
                 </div>
               </div>
            </div>
         )}
       </div>
 
-      {/* Telemetry Dashboard */}
+      {/* Bottom Dashboard */}
       <div className="absolute bottom-10 left-0 w-full px-10 flex justify-between items-end">
         <div className="bg-slate-950/90 backdrop-blur-3xl p-6 rounded-[2.5rem] border border-white/10 shadow-3xl min-w-[240px]">
            <div className="flex items-center gap-4 mb-4">
              <div className={`w-3 h-3 rounded-full ${cvReady ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-             <span className="text-[11px] font-orbitron font-black text-white uppercase tracking-widest">QUAD_PERSPECTIVE_LOCKED</span>
+             <span className="text-[11px] font-orbitron font-black text-white uppercase tracking-widest">
+                {corners ? 'PERSPECTIVE_LOCKED' : 'SEEKING_TARGET'}
+             </span>
            </div>
            <div className="space-y-2">
              <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Matrix Status:</span>
-                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">{detectedData?.strategyUsed || 'IDLE_SCAN'}</span>
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Search Integrity:</span>
+                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">STABLE_v2</span>
              </div>
              <div className="flex justify-between items-center">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Vertex Lock:</span>
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Current Action:</span>
                 <span className={`text-[8px] font-black uppercase tracking-tight ${corners ? 'text-green-400' : 'text-slate-600'}`}>
-                   {corners ? 'DIST_SNAP_ACTIVE' : 'SEEKING_CORNERS'}
+                   {corners ? 'IDENTIFYING_RETRY' : 'ANALYZING_FEED'}
                 </span>
              </div>
            </div>
@@ -403,7 +400,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         <button 
             onClick={handleReset}
             className="pointer-events-auto bg-slate-900/90 hover:bg-red-600 backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group"
-            title="Reset Scanner Core"
         >
             <svg className="w-8 h-8 text-white group-hover:rotate-180 transition-transform duration-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
