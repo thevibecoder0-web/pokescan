@@ -205,33 +205,16 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               )}
             </div>
 
-            {/* Continuous Detection Display (Under Button Area) */}
-            <div className="absolute bottom-[20%] left-0 right-0 flex justify-center pointer-events-none">
-                <div className={`px-8 py-3 rounded-full bg-slate-950/80 backdrop-blur-xl border border-white/10 flex items-center gap-4 transition-all duration-500 ${liveDetectedName ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-4 scale-95'}`}>
-                    <div className="flex flex-col">
-                        <span className="text-[8px] font-orbitron font-black text-red-500 tracking-widest uppercase">Live_Feed</span>
-                        <span className="text-lg font-orbitron font-bold text-white tracking-tight">
-                            {liveDetectedName || "Searching..."}
-                        </span>
-                    </div>
-                    {isProcessingLocal && (
-                        <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse shadow-[0_0_10px_rgba(220,38,38,1)]"></div>
-                    )}
-                </div>
-            </div>
-
             {/* Diagnostics Overlay */}
-            <div className="absolute top-8 right-12 flex flex-col items-end gap-1.5 pointer-events-none opacity-60">
-              <div className="flex items-center gap-2">
-                 <div className="text-[9px] font-orbitron font-black text-white/40 uppercase tracking-[0.5em]">
-                    AUTONOMIC_SCAN: ACTIVE
-                 </div>
-                 <div className={`w-1.5 h-1.5 rounded-full ${isProcessingLocal ? 'bg-indigo-500' : 'bg-green-500'}`}></div>
+            <div className="absolute top-8 right-12 flex items-center gap-2 pointer-events-none opacity-60">
+              <div className="text-[9px] font-orbitron font-black text-white/40 uppercase tracking-[0.5em]">
+                 AUTONOMIC_SCAN: ACTIVE
               </div>
+              <div className={`w-1.5 h-1.5 rounded-full ${isProcessingLocal ? 'bg-indigo-500' : 'bg-green-500'}`}></div>
             </div>
 
-            {/* Tactical Control Interface */}
-            <div className="absolute bottom-12 left-0 right-0 flex flex-col items-center gap-8 px-12">
+            {/* Tactical Control Interface - Repositioned Display under the button */}
+            <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center gap-6 px-12">
               
               <div className="flex items-center gap-12">
                 <button
@@ -261,8 +244,22 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 <div className="w-16 h-16 invisible"></div>
               </div>
 
-              <div className="text-[10px] font-orbitron font-bold text-white/40 tracking-[0.5em] uppercase">
-                 Bind Detected Asset
+              {/* LIVE DETECTION HUD (Under Button) */}
+              <div className={`flex flex-col items-center transition-all duration-500 ${liveDetectedName ? 'opacity-100 translate-y-0' : 'opacity-40 translate-y-0'}`}>
+                  <div className="flex items-center gap-3 mb-1">
+                      <div className={`w-2 h-2 rounded-full ${isProcessingLocal ? 'bg-red-500 animate-pulse' : 'bg-red-500/40'}`}></div>
+                      <span className="text-[9px] font-orbitron font-black text-red-500 tracking-[0.4em] uppercase">
+                          {isProcessingLocal ? 'Analyzing_Matrix' : 'Feed_Idle'}
+                      </span>
+                  </div>
+                  <div className="bg-slate-950/80 backdrop-blur-2xl border border-white/10 px-10 py-3 rounded-2xl shadow-2xl">
+                      <span className="text-xl font-orbitron font-bold text-white tracking-tighter">
+                          {liveDetectedName || "Align Asset to Begin"}
+                      </span>
+                  </div>
+                  <div className="text-[8px] font-orbitron font-bold text-white/30 tracking-[0.6em] uppercase mt-3">
+                     Bind Detected Asset
+                  </div>
               </div>
             </div>
           </>
