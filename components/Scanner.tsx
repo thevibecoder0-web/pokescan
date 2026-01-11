@@ -51,7 +51,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [isProcessing, setIsProcessing] = useState(false);
   const [showWarped, setShowWarped] = useState(false);
   const [isFrozen, setIsFrozen] = useState(false);
-  const [freezeCountdown, setFreezeCountdown] = useState(5);
+  const [freezeCountdown, setFreezeCountdown] = useState(50);
   const [statusIdx, setStatusIdx] = useState(0);
   
   const lastFoundTime = useRef<number>(0);
@@ -114,7 +114,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         
         setIsFrozen(true);
         setShowWarped(true);
-        setFreezeCountdown(10);
+        setFreezeCountdown(50);
         freezeStartTimeRef.current = Date.now();
         
         const base64 = imgData.split(',')[1];
@@ -188,8 +188,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (videoRef.current) videoRef.current.pause(); 
       timer = window.setInterval(() => {
         const elapsed = (Date.now() - freezeStartTimeRef.current) / 1000;
-        const isUpload = !!fileInputRef.current?.value;
-        const maxTime = isUpload ? 10 : 5;
+        const maxTime = 50; // Standardize scanning lock to 50 seconds
         const remaining = Math.max(0, maxTime - Math.floor(elapsed));
         setFreezeCountdown(remaining);
         
@@ -274,7 +273,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         lastFoundTime.current = Date.now();
         if (!isFrozen) {
            setIsFrozen(true);
-           setFreezeCountdown(5);
+           setFreezeCountdown(50);
            freezeStartTimeRef.current = Date.now();
            frozenFrameRef.current = cv.imread(videoRef.current);
         }
