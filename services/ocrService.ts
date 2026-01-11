@@ -45,7 +45,7 @@ export const initOCRWorker = async () => {
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/',
       tessjs_create_hocr: '0',
       tessjs_create_tsv: '0',
-      tessedit_pageseg_mode: '6', // Assume a single uniform block of text
+      tessedit_pageseg_mode: '6', 
     });
   } catch (err) {
     console.error("Worker Initialization Failed", err);
@@ -61,50 +61,53 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
     const w = cardCanvas.width;
     const h = cardCanvas.height;
 
+    // Standard TCG regions for warped 400x560 image
     const regions = [
-      { x: w * 0.05, y: h * 0.02, w: w * 0.65, h: h * 0.10 }, // Target: Name Bar
-      { x: w * 0.02, y: h * 0.88, w: w * 0.45, h: h * 0.10 }  // Target: Number Info
+      { x: w * 0.04, y: h * 0.025, w: w * 0.68, h: h * 0.11 }, // Name Bar (Increased height for multi-line or large fonts)
+      { x: w * 0.02, y: h * 0.86, w: w * 0.48, h: h * 0.12 }  // Number/Set Area
     ];
 
     const scanCanvas = document.createElement('canvas');
     const sCtx = scanCanvas.getContext('2d');
     if (!sCtx) return null;
 
-    const regionHeight = regions[0].h;
-    const padding = 10;
+    const rH = regions[0].h;
+    const pad = 15;
     scanCanvas.width = w;
-    scanCanvas.height = (regionHeight + padding) * regions.length;
+    scanCanvas.height = (rH + pad) * regions.length;
     sCtx.fillStyle = 'white';
     sCtx.fillRect(0, 0, scanCanvas.width, scanCanvas.height);
 
     regions.forEach((r, i) => {
-      sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, i * (regionHeight + padding), r.w, r.h);
+      sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, i * (rH + pad), r.w, r.h);
     });
 
     const { data } = await worker.recognize(scanCanvas);
     
     let detectedName: string | null = null;
     let detectedNumber: string | null = null;
-    const middleY = scanCanvas.height / 2;
+    const splitY = scanCanvas.height / 2;
 
     for (const word of data.words) {
       const text = word.text.trim();
       if (text.length < 3) continue;
 
-      const yPos = (word.bbox.y0 + word.bbox.y1) / 2;
+      const yMid = (word.bbox.y0 + word.bbox.y1) / 2;
 
-      // Logic: Top region words are candidate names
-      if (!detectedName && yPos < middleY) {
+      // Identify Name
+      if (!detectedName && yMid < splitY) {
+        // Cleaning name artifacts
         const cleanName = text.replace(/[^a-zA-Z]/g, '');
         if (cleanName.length >= 3) {
-          // Fast check
-          if (POKEMON_SPECIES.some(s => s.toLowerCase() === cleanName.toLowerCase())) {
-             detectedName = POKEMON_SPECIES.find(s => s.toLowerCase() === cleanName.toLowerCase()) || cleanName;
+          // Priority 1: Exact Match
+          const exact = POKEMON_SPECIES.find(s => s.toLowerCase() === cleanName.toLowerCase());
+          if (exact) {
+            detectedName = exact;
           } else {
-            // Fuzzy check
+            // Priority 2: Fuzzy Match
             for (const species of POKEMON_SPECIES) {
               const dist = getLevenshteinDistance(cleanName, species);
-              if (dist <= (species.length > 5 ? 2 : 1)) {
+              if (dist <= (species.length > 6 ? 2 : 1)) {
                 detectedName = species;
                 break;
               }
@@ -113,13 +116,13 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
         }
       }
 
-      // Logic: Bottom region words are candidate numbers
-      if (!detectedNumber && yPos >= middleY) {
-        const numMatch = text.match(/([A-Z0-9]{1,4}\/\d{1,3})|(\d{3,4})/i);
+      // Identify Card Number
+      if (!detectedNumber && yMid >= splitY) {
+        // Match standard formats: 001/191 or just 001 or PROMO-001
+        const numMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})|(\d{3,4})|([A-Z]{1,2}\d{1,3})/i);
         if (numMatch) detectedNumber = numMatch[0];
       }
       
-      // Early exit if both found
       if (detectedName && detectedNumber) break;
     }
 
@@ -128,7 +131,7 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
         name: detectedName,
         number: detectedNumber,
         bbox: null,
-        strategyUsed: "FAST_CROP_TURBO"
+        strategyUsed: "TURBO_PRECISION_CROP"
       };
     }
     

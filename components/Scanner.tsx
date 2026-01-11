@@ -112,15 +112,19 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let src = cv.imread(c), gray = new cv.Mat(), claheMat = new cv.Mat(), blurred = new cv.Mat(), thresh = new cv.Mat(), edges = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
       
-      let clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+      // Robust Glare Handling: CLAHE followed by strong blurring to merge high-intensity highlights
+      let clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
       clahe.apply(gray, claheMat);
+      cv.GaussianBlur(claheMat, blurred, new cv.Size(7, 7), 0);
       
-      cv.GaussianBlur(claheMat, blurred, new cv.Size(5, 5), 0);
-      cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
-      cv.Canny(blurred, edges, 75, 200);
+      // Multi-step Edge Detection: Canny + Adaptive Threshold
+      cv.Canny(blurred, edges, 50, 150);
+      cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 5);
       cv.bitwise_or(thresh, edges, thresh);
       
+      // Dilation to bridge edges potentially broken by flash glare
       let k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+      cv.dilate(thresh, thresh, k);
       cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, k);
       
       let contours = new cv.MatVector(), hierarchy = new cv.Mat();
@@ -129,7 +133,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let maxA = 0, found: CardCorners | null = null;
       for (let i = 0; i < contours.size(); ++i) {
         let cnt = contours.get(i), area = cv.contourArea(cnt);
-        if (area > (c.width * c.height * 0.1)) {
+        if (area > (c.width * c.height * 0.15)) {
           let approx = new cv.Mat(), peri = cv.arcLength(cnt, true);
           cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
           if (approx.rows === 4) {
@@ -138,8 +142,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const sum = [...pts].sort((a,b) => (a.x+a.y)-(b.x+b.y));
             const diff = [...pts].sort((a,b) => (a.y-a.x)-(b.y-b.x));
             const potential = { tl: sum[0], br: sum[3], tr: diff[0], bl: diff[3] };
-            const ratio = Math.hypot(potential.tr.x-potential.tl.x, potential.tr.y-potential.tl.y) / Math.hypot(potential.bl.x-potential.tl.x, potential.bl.y-potential.tl.y);
-            if (ratio > 0.6 && ratio < 0.8 && area > maxA) { maxA = area; found = potential; }
+            const w = Math.hypot(potential.tr.x-potential.tl.x, potential.tr.y-potential.tl.y);
+            const h = Math.hypot(potential.bl.x-potential.tl.x, potential.bl.y-potential.tl.y);
+            const ratio = w / h;
+            // standard card ratio ~0.71
+            if (ratio > 0.6 && ratio < 0.85 && area > maxA) { maxA = area; found = potential; }
           }
           approx.delete();
         }
@@ -147,19 +154,19 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       }
 
       if (found) { setTargetCorners(found); lastFoundTime.current = Date.now(); }
-      else if (Date.now() - lastFoundTime.current > 500) setTargetCorners(null);
+      else if (Date.now() - lastFoundTime.current > 400) setTargetCorners(null);
 
       src.delete(); gray.delete(); claheMat.delete(); clahe.delete(); blurred.delete(); thresh.delete(); edges.delete(); k.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {}
   }, [cvReady]);
 
   const triggerDeepScan = async () => {
-    if (isDeepScanning || !videoRef.current || !cardCanvasRef.current || Date.now() - lastDeepScanTime.current < 5000) return;
+    if (isDeepScanning || !videoRef.current || !cardCanvasRef.current || Date.now() - lastDeepScanTime.current < 4000) return;
     setIsDeepScanning(true);
     lastDeepScanTime.current = Date.now();
     try {
       const c = cardCanvasRef.current;
-      const b64 = c.toDataURL('image/jpeg', 0.8).split(',')[1];
+      const b64 = c.toDataURL('image/jpeg', 0.9).split(',')[1];
       const res = await identifyPokemonCard(b64);
       if (res && res.name) {
         onCardDetected({ ...res, id: Math.random().toString(36).substr(2,9), scanDate: new Date().toLocaleDateString(), imageUrl: c.toDataURL() });
@@ -178,6 +185,20 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 400, 0, 400, 560, 0, 560]);
       let M = cv.getPerspectiveTransform(sc, dc);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+      
+      // OCR PRE-PROCESSING: Convert to grayscale, sharpen, and apply Otsu thresholding
+      cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY);
+      
+      // Sharpening Kernel
+      let kernel = cv.matFromArray(3, 3, cv.CV_32F, [
+        0, -1, 0,
+        -1, 5, -1,
+        0, -1, 0
+      ]);
+      cv.filter2D(dst, dst, cv.CV_8U, kernel);
+      kernel.delete();
+
+      cv.threshold(dst, dst, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
       cv.imshow(cardCanvasRef.current, dst);
       
       const res = await extractNameLocally(cardCanvasRef.current);
@@ -188,7 +209,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           setScanResult({ name: res.name, price: "--" });
           setTimeout(() => setScanResult(null), 1500);
         }
-      } else if (Date.now() - lastFoundTime.current > 1500) {
+      } else if (Date.now() - lastFoundTime.current > 1200) {
         triggerDeepScan();
       }
       src.delete(); dst.delete(); M.delete(); sc.delete(); dc.delete();
@@ -198,7 +219,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   useEffect(() => {
     let int: number;
     if (isScanning && cvReady && !scanResult) {
-      int = window.setInterval(() => { detectCardWithCV(); if (targetCorners) processFrame(); }, 100);
+      int = window.setInterval(() => { detectCardWithCV(); if (targetCorners) processFrame(); }, 120);
     }
     return () => clearInterval(int);
   }, [isScanning, cvReady, targetCorners, isProcessing, scanResult]);
