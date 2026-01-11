@@ -35,12 +35,20 @@
             0% { transform: translateY(-100%); }
             100% { transform: translateY(100%); }
         }
+        @keyframes scanline-sweep {
+            0% { top: 0%; }
+            50% { top: 100%; }
+            100% { top: 0%; }
+        }
         @keyframes spin-slow {
             0% { transform: rotate(360deg); }
             100% { transform: rotate(0deg); }
         }
         .animate-scanline {
             animation: scanline 2s linear infinite;
+        }
+        .animate-scanline-sweep {
+            animation: scanline-sweep 3s ease-in-out infinite;
         }
         .animate-spin-slow {
             animation: spin-slow 8s linear infinite;
