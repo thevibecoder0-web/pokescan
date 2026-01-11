@@ -32,10 +32,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   
   // Real-time tracking state
   const [corners, setCorners] = useState<Corners>({
-    tl: { x: 20, y: 20 },
-    tr: { x: 80, y: 20 },
-    bl: { x: 20, y: 80 },
-    br: { x: 80, y: 80 }
+    tl: { x: 25, y: 25 },
+    tr: { x: 75, y: 25 },
+    bl: { x: 25, y: 75 },
+    br: { x: 75, y: 75 }
   });
 
   const startCamera = async () => {
@@ -62,7 +62,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }
   };
 
-  // Algorithm to find the card in the frame
+  /**
+   * ROBUST CARD DETECTION ALGORITHM
+   * 1. Downsample video frame.
+   * 2. Calculate pixel gradients (Edge Detection).
+   * 3. Find extreme points using Projection (Sum/Diff of coordinates).
+   * 4. LERP (Linear Interpolation) for smooth tracking.
+   */
   useEffect(() => {
     if (!isScanning) return;
 
@@ -76,9 +82,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) return;
 
-        // Downsample for performance
-        const width = 160;
-        const height = (video.videoHeight / video.videoWidth) * width;
+        // Downsample for performance (approx 100-160px width is plenty for feature tracking)
+        const width = 120;
+        const height = Math.floor((video.videoHeight / video.videoWidth) * width);
         canvas.width = width;
         canvas.height = height;
         ctx.drawImage(video, 0, 0, width, height);
@@ -86,44 +92,60 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         const imageData = ctx.getImageData(0, 0, width, height);
         const data = imageData.data;
         
-        let minX = width, maxX = 0, minY = height, maxY = 0;
+        // Extremal Points based on projections
+        // TL: min(x+y), TR: max(x-y), BR: max(x+y), BL: min(x-y)
+        let minSum = Infinity, maxSum = -Infinity;
+        let minDiff = Infinity, maxDiff = -Infinity;
+        
+        let pTL = { x: 25, y: 25 }, pTR = { x: 75, y: 25 };
+        let pBR = { x: 75, y: 75 }, pBL = { x: 25, y: 75 };
+        
         let found = false;
+        const threshold = 35; // Gradient magnitude threshold
 
-        // Simple edge/contrast detection to find the "brightest" rectangular-ish object (the card)
-        for (let y = 0; y < height; y++) {
-          for (let x = 0; x < width; x++) {
+        for (let y = 1; y < height - 1; y++) {
+          for (let x = 1; x < width - 1; x++) {
             const idx = (y * width + x) * 4;
-            const r = data[idx];
-            const g = data[idx + 1];
-            const b = data[idx + 2];
-            const brightness = (r + g + b) / 3;
             
-            // Threshold for typical card highlights/borders in contrast to background
-            if (brightness > 140) {
-              if (x < minX) minX = x;
-              if (x > maxX) maxX = x;
-              if (y < minY) minY = y;
-              if (y > maxY) maxY = y;
+            // Simple Gradient Magnitude (Sobel approximation)
+            // L(x,y) = brightness
+            const getL = (ox: number, oy: number) => {
+              const i = ((y + oy) * width + (x + ox)) * 4;
+              return (data[i] + data[i+1] + data[i+2]) / 3;
+            };
+            
+            const dx = getL(1, 0) - getL(-1, 0);
+            const dy = getL(0, 1) - getL(0, -1);
+            const mag = Math.sqrt(dx*dx + dy*dy);
+
+            if (mag > threshold) {
+              const sum = x + y;
+              const diff = x - y;
+              
+              if (sum < minSum) { minSum = sum; pTL = { x, y }; }
+              if (sum > maxSum) { maxSum = sum; pBR = { x, y }; }
+              if (diff < minDiff) { minDiff = diff; pBL = { x, y }; }
+              if (diff > maxDiff) { maxDiff = diff; pTR = { x, y }; }
               found = true;
             }
           }
         }
 
-        if (found && (maxX - minX) > width * 0.2) {
-          // Normalize to percentages and add some smoothing/padding
+        if (found) {
+          // Normalize to percentages (0-100)
           const targetCorners = {
-            tl: { x: (minX / width) * 100, y: (minY / height) * 100 },
-            tr: { x: (maxX / width) * 100, y: (minY / height) * 100 },
-            bl: { x: (minX / width) * 100, y: (maxY / height) * 100 },
-            br: { x: (maxX / width) * 100, y: (maxY / height) * 100 }
+            tl: { x: (pTL.x / width) * 100, y: (pTL.y / height) * 100 },
+            tr: { x: (pTR.x / width) * 100, y: (pTR.y / height) * 100 },
+            bl: { x: (pBL.x / width) * 100, y: (pBL.y / height) * 100 },
+            br: { x: (pBR.x / width) * 100, y: (pBR.y / height) * 100 }
           };
 
-          // Basic jitter reduction (lerp)
+          // LERP for smooth UI transition (25% step)
           setCorners(prev => ({
-            tl: { x: prev.tl.x + (targetCorners.tl.x - prev.tl.x) * 0.2, y: prev.tl.y + (targetCorners.tl.y - prev.tl.y) * 0.2 },
-            tr: { x: prev.tr.x + (targetCorners.tr.x - prev.tr.x) * 0.2, y: prev.tr.y + (targetCorners.tr.y - prev.tr.y) * 0.2 },
-            bl: { x: prev.bl.x + (targetCorners.bl.x - prev.bl.x) * 0.2, y: prev.bl.y + (targetCorners.bl.y - prev.bl.y) * 0.2 },
-            br: { x: prev.br.x + (targetCorners.br.x - prev.br.x) * 0.2, y: prev.br.y + (targetCorners.br.y - prev.br.y) * 0.2 },
+            tl: { x: prev.tl.x + (targetCorners.tl.x - prev.tl.x) * 0.25, y: prev.tl.y + (targetCorners.tl.y - prev.tl.y) * 0.25 },
+            tr: { x: prev.tr.x + (targetCorners.tr.x - prev.tr.x) * 0.25, y: prev.tr.y + (targetCorners.tr.y - prev.tr.y) * 0.25 },
+            bl: { x: prev.bl.x + (targetCorners.bl.x - prev.bl.x) * 0.25, y: prev.bl.y + (targetCorners.bl.y - prev.bl.y) * 0.25 },
+            br: { x: prev.br.x + (targetCorners.br.x - prev.br.x) * 0.25, y: prev.br.y + (targetCorners.br.y - prev.br.y) * 0.25 },
           }));
         }
       }
@@ -163,7 +185,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (result && result.name && result.name.toLowerCase() !== 'unknown') {
         setDetectedName(result.name);
       } else {
-        setDetectedName("Text Not Found");
+        setDetectedName("Detection Failed");
         setTimeout(() => setDetectedName(null), 3000);
       }
     }
@@ -188,71 +210,85 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               ref={videoRef}
               autoPlay
               playsInline
-              className="w-full h-full object-cover opacity-80"
+              className="w-full h-full object-cover opacity-70 grayscale contrast-125"
             />
             
-            {/* Dynamic Card Border Overlay */}
+            {/* Perspective HUD Layer */}
             <div className="absolute inset-0 pointer-events-none">
-              {/* Perspective Frame */}
+              {/* Dynamic perspective frame */}
               <div 
-                className={`absolute inset-0 border-[3px] transition-colors duration-300 ${loading ? 'border-yellow-400' : 'border-white/40'}`}
-                style={{ clipPath, backgroundColor: loading ? 'rgba(250,204,21,0.1)' : 'transparent' }}
+                className={`absolute inset-0 border-2 transition-colors duration-300 ${loading ? 'border-yellow-400' : 'border-red-500/40'}`}
+                style={{ clipPath, backgroundColor: loading ? 'rgba(250,204,21,0.1)' : 'rgba(239, 68, 68, 0.05)' }}
               >
-                {/* Visual corners for high-tech look */}
-                <div style={{ position: 'absolute', top: `${corners.tl.y}%`, left: `${corners.tl.x}%`, transform: 'translate(-50%, -50%)' }} className="w-4 h-4 border-t-4 border-l-4 border-red-600"></div>
-                <div style={{ position: 'absolute', top: `${corners.tr.y}%`, left: `${corners.tr.x}%`, transform: 'translate(50%, -50%)' }} className="w-4 h-4 border-t-4 border-r-4 border-red-600"></div>
-                <div style={{ position: 'absolute', top: `${corners.bl.y}%`, left: `${corners.bl.x}%`, transform: 'translate(-50%, 50%)' }} className="w-4 h-4 border-b-4 border-l-4 border-red-600"></div>
-                <div style={{ position: 'absolute', top: `${corners.br.y}%`, left: `${corners.br.x}%`, transform: 'translate(50%, 50%)' }} className="w-4 h-4 border-b-4 border-r-4 border-red-600"></div>
+                {/* HUD Elements at Corners */}
+                <div style={{ position: 'absolute', top: `${corners.tl.y}%`, left: `${corners.tl.x}%`, transform: 'translate(-50%, -50%)' }} className="w-6 h-6 border-t-2 border-l-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
+                <div style={{ position: 'absolute', top: `${corners.tr.y}%`, left: `${corners.tr.x}%`, transform: 'translate(50%, -50%)' }} className="w-6 h-6 border-t-2 border-r-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
+                <div style={{ position: 'absolute', top: `${corners.bl.y}%`, left: `${corners.bl.x}%`, transform: 'translate(-50%, 50%)' }} className="w-6 h-6 border-b-2 border-l-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
+                <div style={{ position: 'absolute', top: `${corners.br.y}%`, left: `${corners.br.x}%`, transform: 'translate(50%, 50%)' }} className="w-6 h-6 border-b-2 border-r-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
               </div>
 
-              {/* Top-Left Label following the card's TL corner */}
+              {/* Top-Left Dynamic Label */}
               <div 
-                className="absolute bg-slate-950/90 backdrop-blur-xl px-4 py-1.5 rounded-lg border border-white/20 whitespace-nowrap shadow-2xl flex items-center gap-2 transition-all duration-100"
+                className="absolute bg-slate-950/95 backdrop-blur-2xl px-5 py-2 rounded-xl border border-white/10 whitespace-nowrap shadow-2xl flex items-center gap-3 transition-all duration-75"
                 style={{ 
-                  top: `calc(${corners.tl.y}% - 45px)`, 
+                  top: `calc(${corners.tl.y}% - 50px)`, 
                   left: `${corners.tl.x}%`,
-                  opacity: (corners.tl.y > 5 && corners.tl.x > 5) ? 1 : 0
+                  opacity: (corners.tl.y > 5 && corners.tl.x > 5) ? 1 : 0,
+                  transform: 'scale(0.9)'
                 }}
               >
-                <div className={`w-2 h-2 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : 'bg-red-600'}`}></div>
-                <span className="text-[10px] font-orbitron font-bold uppercase tracking-[0.1em] text-white">
-                  {loading ? 'Reading Top-Left...' : (detectedName || 'Position Card')}
+                <div className="relative">
+                  <div className={`w-3 h-3 rounded-full ${loading ? 'bg-yellow-500 animate-ping' : 'bg-red-600 shadow-[0_0_8px_rgba(220,38,38,0.8)]'}`}></div>
+                  {loading && <div className="absolute inset-0 w-3 h-3 rounded-full bg-yellow-500"></div>}
+                </div>
+                <span className="text-[12px] font-orbitron font-black uppercase tracking-[0.15em] text-white">
+                  {loading ? 'CALIBRATING...' : (detectedName || 'SCANNING ASSET')}
                 </span>
               </div>
 
-              {/* Bottom-Left Version Info (Fixed to screen bottom-left as requested) */}
-              <div className="absolute bottom-4 left-4 text-[9px] font-orbitron font-bold text-slate-500 uppercase tracking-widest px-1">
-                 SV8 v1.0.6 - DEV BUILD
+              {/* Version Identifier */}
+              <div className="absolute bottom-6 left-6 flex flex-col gap-1">
+                <div className="text-[10px] font-orbitron font-black text-white/40 uppercase tracking-[0.3em]">
+                   SYSTEM_ID: POKE-SCAN_7
+                </div>
+                <div className="text-[9px] font-orbitron font-bold text-red-500/60 uppercase tracking-widest">
+                   v1.0.7 - ENHANCED_TRACKING
+                </div>
               </div>
             </div>
 
-            <div className="absolute bottom-12 left-0 right-0 flex justify-center items-center gap-8 px-4">
+            {/* Controls */}
+            <div className="absolute bottom-12 left-0 right-0 flex justify-center items-center gap-12 px-4">
               <button
                 onClick={() => setIsScanning(false)}
-                className="w-16 h-16 rounded-full bg-slate-950/90 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all backdrop-blur-xl hover:scale-110 active:scale-90"
+                className="w-14 h-14 rounded-2xl bg-slate-950/80 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all backdrop-blur-xl hover:scale-110 active:scale-90"
               >
-                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
               </button>
 
               <button onClick={captureFrame} disabled={loading} className="group relative">
-                <div className={`w-24 h-24 rounded-full border-[6px] flex items-center justify-center transition-all ${
-                    loading ? 'border-yellow-500 bg-yellow-500/20' : 'border-white bg-red-600 shadow-[0_0_40px_rgba(220,38,38,0.6)]'
+                <div className={`w-28 h-28 rounded-full border-8 flex items-center justify-center transition-all duration-300 ${
+                    loading ? 'border-yellow-500 bg-yellow-500/10' : 'border-white bg-red-600 shadow-[0_0_60px_rgba(220,38,38,0.5)]'
                 }`}>
                   {loading ? (
-                    <svg className="animate-spin h-10 w-10 text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    <svg className="animate-spin h-12 w-12 text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                   ) : (
-                    <div className="w-14 h-14 rounded-full bg-white opacity-90 group-hover:scale-90 transition-transform shadow-inner"></div>
+                    <div className="w-16 h-16 rounded-full bg-white group-hover:scale-95 transition-transform shadow-[inset_0_2px_10px_rgba(0,0,0,0.2)]"></div>
                   )}
                 </div>
+                {!loading && <div className="absolute -inset-2 rounded-full border-2 border-red-500/20 animate-ping pointer-events-none"></div>}
               </button>
               
-              <div className="w-16 h-16"></div>
+              <div className="w-14 h-14"></div>
             </div>
           </>
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 p-12 text-center">
-             <button onClick={startCamera} className="px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-black rounded-full shadow-2xl transition-all uppercase tracking-widest text-sm active:scale-95">
-               Initialize Camera
+          <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 p-12 text-center bg-slate-950">
+             <div className="w-20 h-20 mb-8 border-4 border-red-600 rounded-full flex items-center justify-center opacity-20 animate-pulse">
+                <div className="w-12 h-12 bg-red-600 rounded-full"></div>
+             </div>
+             <button onClick={startCamera} className="px-10 py-4 bg-red-600 hover:bg-red-700 text-white font-black rounded-2xl shadow-2xl transition-all uppercase tracking-[0.3em] text-xs active:scale-95 border border-red-400/30">
+               Sync Optical Sensor
              </button>
           </div>
         )}
