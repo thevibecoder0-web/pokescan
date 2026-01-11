@@ -71,14 +71,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         const context = canvas.getContext('2d', { alpha: false });
 
         if (context && video.videoWidth > 0) {
-          // Process at a lower resolution for speed
-          canvas.width = 640;
-          canvas.height = 480;
+          // Internal recognition capture (High-res for OCR)
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
           
           try {
-            const name = await extractNameLocally(canvas.toDataURL('image/jpeg', 0.7));
-            if (name && name.length > 2) {
+            // Pass the canvas itself so the service can crop and preprocess
+            const name = await extractNameLocally(canvas);
+            if (name) {
               setLiveDetectedName(name);
             }
           } catch (e) {
@@ -86,7 +87,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
         }
         setIsProcessingLocal(false);
-      }, 1500); // Pulse every 1.5 seconds
+      }, 1200); // Slightly faster pulse
     }
 
     return () => clearInterval(interval);
@@ -104,14 +105,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const context = canvas.getContext('2d', { alpha: false });
 
     if (context) {
-      // High-res capture for Gemini
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       
       const fullImageBase64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
       
-      // Use the live name if we have it to steer the AI, or just scan fresh
+      // Attempt 1: Gemini Deep Scan
       const result = await identifyPokemonCard(fullImageBase64, false);
 
       if (result && result.name) {
@@ -127,16 +127,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           imageUrl: result.imageUrl || `https://placehold.co/400x560/1e293b/white?text=${encodeURIComponent(result.name)}`
         });
         
-        // Clear result after 3 seconds to reset UI
         setTimeout(() => setScanResult(null), 3000);
       } else if (liveDetectedName) {
-        // Fallback: If AI fails but we have a local name, we still bind it
+        // Fallback: If AI is restricted/fails, bind the OCR'd name
         const finalName = liveDetectedName;
         onCardDetected({
           id: Math.random().toString(36).substr(2, 9),
           name: finalName,
           marketValue: "$--.--",
-          set: "Manual Entry",
+          set: "Local Scan",
           rarity: "Common",
           type: "Unknown",
           number: "???",
@@ -157,7 +156,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full overflow-hidden rounded-[3rem] shadow-[0_0_80px_rgba(0,0,0,0.6)] bg-slate-950 border-4 border-slate-800/80 flex flex-col transition-all duration-700">
       <div className="relative aspect-[4/5] sm:aspect-video bg-slate-900 overflow-hidden">
         
-        {/* Exposure Pulse */}
         {flash && <div className="absolute inset-0 z-50 bg-white/60 animate-out fade-out duration-700 pointer-events-none" />}
 
         {error && (
@@ -175,25 +173,22 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               className={`w-full h-full object-cover transition-all duration-1000 ${loading ? 'opacity-30 blur-xl scale-110' : 'opacity-100 contrast-125 saturate-[1.1]'}`}
             />
             
-            {/* Infinite Engine HUD */}
             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-10">
               
-              {/* Scan Area Scouter */}
               {!scanResult && !loading && (
                 <div className="relative w-72 h-96">
-                   <div className="absolute top-0 left-0 w-32 h-16 border-t-4 border-l-4 border-red-600 rounded-tl-3xl opacity-80">
-                      <div className="absolute top-2 left-3 text-[7px] font-orbitron font-black text-red-500 tracking-[0.2em] uppercase">Visual_Target</div>
+                   <div className="absolute top-0 left-0 w-36 h-12 border-t-4 border-l-4 border-red-600 rounded-tl-3xl opacity-90 shadow-[0_0_15px_rgba(220,38,38,0.5)]">
+                      <div className="absolute top-2 left-3 text-[7px] font-orbitron font-black text-red-500 tracking-[0.2em] uppercase">Target_OCR_Zone</div>
                    </div>
                    <div className="absolute inset-0 border border-white/5 rounded-[2.5rem] bg-gradient-to-br from-white/5 to-transparent"></div>
-                   <div className="absolute top-0 left-0 right-0 h-0.5 bg-red-500/30 shadow-[0_0_15px_rgba(220,38,38,0.5)] animate-scanline"></div>
+                   <div className="absolute top-0 left-0 right-0 h-0.5 bg-red-500/40 shadow-[0_0_20px_rgba(220,38,38,0.6)] animate-scanline"></div>
 
                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-1 h-1 bg-red-600 rounded-full animate-ping"></div>
+                      <div className="w-1.5 h-1.5 bg-red-600 rounded-full animate-ping"></div>
                    </div>
                 </div>
               )}
 
-              {/* Final Identification Success */}
               {scanResult && !loading && (
                 <div className="w-full max-w-md animate-in fade-in zoom-in duration-500">
                   <div className="bg-green-500/90 backdrop-blur-3xl p-6 rounded-[2.5rem] border border-green-400/50 shadow-[0_0_100px_rgba(34,197,94,0.4)] flex flex-col items-center gap-2">
@@ -205,15 +200,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               )}
             </div>
 
-            {/* Diagnostics Overlay */}
             <div className="absolute top-8 right-12 flex items-center gap-2 pointer-events-none opacity-60">
               <div className="text-[9px] font-orbitron font-black text-white/40 uppercase tracking-[0.5em]">
-                 AUTONOMIC_SCAN: ACTIVE
+                 ADAPTIVE_OCR: ACTIVE
               </div>
-              <div className={`w-1.5 h-1.5 rounded-full ${isProcessingLocal ? 'bg-indigo-500' : 'bg-green-500'}`}></div>
+              <div className={`w-2 h-2 rounded-full ${isProcessingLocal ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
             </div>
 
-            {/* Tactical Control Interface - Repositioned Display under the button */}
             <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center gap-6 px-12">
               
               <div className="flex items-center gap-12">
@@ -234,7 +227,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                         </div>
                     ) : (
                         <div className="w-16 h-16 rounded-full bg-white opacity-100 group-hover:scale-110 transition-all shadow-2xl flex items-center justify-center">
-                           <div className="w-5 h-5 rounded-full border-[4px] border-slate-950/5 bg-slate-100"></div>
+                           <div className="w-6 h-6 rounded-full border-[5px] border-slate-950/5 bg-slate-100"></div>
                         </div>
                     )}
                     </div>
@@ -244,21 +237,20 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 <div className="w-16 h-16 invisible"></div>
               </div>
 
-              {/* LIVE DETECTION HUD (Under Button) */}
               <div className={`flex flex-col items-center transition-all duration-500 ${liveDetectedName ? 'opacity-100 translate-y-0' : 'opacity-40 translate-y-0'}`}>
                   <div className="flex items-center gap-3 mb-1">
-                      <div className={`w-2 h-2 rounded-full ${isProcessingLocal ? 'bg-red-500 animate-pulse' : 'bg-red-500/40'}`}></div>
+                      <div className={`w-2 h-2 rounded-full ${isProcessingLocal ? 'bg-red-500 animate-pulse shadow-[0_0_10px_rgba(220,38,38,0.8)]' : 'bg-slate-700'}`}></div>
                       <span className="text-[9px] font-orbitron font-black text-red-500 tracking-[0.4em] uppercase">
-                          {isProcessingLocal ? 'Analyzing_Matrix' : 'Feed_Idle'}
+                          {isProcessingLocal ? 'Reading_Titan_ID' : 'Awaiting_Asset'}
                       </span>
                   </div>
-                  <div className="bg-slate-950/80 backdrop-blur-2xl border border-white/10 px-10 py-3 rounded-2xl shadow-2xl">
-                      <span className="text-xl font-orbitron font-bold text-white tracking-tighter">
-                          {liveDetectedName || "Align Asset to Begin"}
+                  <div className="bg-slate-950/80 backdrop-blur-3xl border border-white/10 px-12 py-4 rounded-2xl shadow-2xl min-w-[280px] text-center">
+                      <span className="text-2xl font-orbitron font-bold text-white tracking-tighter drop-shadow-lg">
+                          {liveDetectedName || "Align Top-Left"}
                       </span>
                   </div>
                   <div className="text-[8px] font-orbitron font-bold text-white/30 tracking-[0.6em] uppercase mt-3">
-                     Bind Detected Asset
+                     Finalize Bind Sequence
                   </div>
               </div>
             </div>
@@ -275,7 +267,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
              <button onClick={startCamera} className="px-20 py-7 bg-red-600 hover:bg-red-700 text-white font-black rounded-3xl shadow-2xl transition-all uppercase tracking-[0.8em] text-[13px] active:scale-95 border-b-8 border-red-900 group">
                Sync Neural Scanner
              </button>
-             <p className="mt-8 text-[9px] font-orbitron font-bold text-slate-600 tracking-[0.4em] uppercase">Infinite Autonomic Recognition</p>
           </div>
         )}
       </div>
