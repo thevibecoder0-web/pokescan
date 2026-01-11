@@ -2,148 +2,153 @@
 import { createWorker } from 'tesseract.js';
 
 let worker: any = null;
+const SCAN_BUFFER_LIMIT = 5;
+const nameBuffer: Map<string, number> = new Map();
 
 /**
- * Initializes the OCR engine with specific parameters for TCG text.
+ * Initializes the OCR engine with optimized TCG parameters.
  */
 export const initOCR = async () => {
   if (!worker) {
     worker = await createWorker('eng');
     await worker.setParameters({
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -',
-      tessedit_pageseg_mode: '7', // Treat as a single text line
+      tessedit_pageseg_mode: '7', // Single line mode for names
+      tessedit_ocr_engine_mode: '1', // LSTM only for speed/accuracy balance
     });
   }
   return worker;
 };
 
 /**
- * Enhanced binarization for OCR.
- * Uses a sharp thresholding to eliminate background gradients and holofoil noise.
+ * Uses OpenCV.js (loaded in index.html) to perform professional-grade 
+ * image normalization specifically for high-contrast text extraction.
  */
-const preprocessForOCR = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-  
-  // Calculate average brightness
-  let totalBrightness = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    totalBrightness += (data[i] + data[i + 1] + data[i + 2]) / 3;
-  }
-  const avgBrightness = totalBrightness / (data.length / 4);
+const preprocessWithOpenCV = (canvas: HTMLCanvasElement): HTMLCanvasElement => {
+  if (!(window as any).cv) return canvas;
+  const cv = (window as any).cv;
 
-  // Pokemon card names are typically dark on light backgrounds (except some special sets)
-  // We want to maximize the contrast of the text.
-  // We'll use a slightly aggressive threshold.
-  const threshold = avgBrightness < 128 ? avgBrightness + 10 : avgBrightness - 15;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
+  try {
+    let src = cv.imread(canvas);
+    let dst = new cv.Mat();
     
-    // Simple grayscale
-    const v = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    // 1. Grayscale
+    cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
     
-    // Binarize
-    const res = v > threshold ? 255 : 0;
-    data[i] = data[i + 1] = data[i + 2] = res;
+    // 2. Increase Contrast / Normalize
+    cv.normalize(src, src, 0, 255, cv.NORM_MINMAX, cv.CV_8U);
+    
+    // 3. Adaptive Thresholding (Crucial for handling different lighting)
+    cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+    
+    // 4. Denoising (Morphological opening)
+    let M = cv.Mat.ones(2, 2, cv.CV_8U);
+    cv.morphologyEx(dst, dst, cv.MORPH_OPEN, M);
+    
+    cv.imshow(canvas, dst);
+    
+    src.delete();
+    dst.delete();
+    M.delete();
+  } catch (e) {
+    console.warn("OpenCV Processing skipped:", e);
   }
-  ctx.putImageData(imageData, 0, 0);
+  return canvas;
 };
 
 /**
- * Corrects common OCR misidentifications.
+ * High-accuracy normalization for TCG specific labels.
  */
-const normalizeOCRText = (text: string): string => {
-  return text
+const neuralCorrect = (text: string): string => {
+  let cleaned = text
+    .replace(/[|\[\]\(\)]/g, 'I')
     .replace(/\b1\b/g, 'I')
     .replace(/\b0\b/g, 'O')
-    .replace(/\|/g, 'I')
-    .replace(/\[/g, 'I')
-    .replace(/\]/g, 'I')
-    .replace(/[^a-zA-Z\s-]/g, '') // Final strip of anything non-alpha
+    .replace(/[^a-zA-Z\s-]/g, '')
     .trim();
+
+  // Fix common TCG suffix glitches
+  return cleaned
+    .replace(/\b[oO][xX]\b/gi, 'ex')
+    .replace(/\bVmax\b/gi, 'VMAX')
+    .replace(/\bVstar\b/gi, 'VSTAR')
+    .replace(/\bGx\b/gi, 'GX')
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
 };
 
 /**
- * Validates if the string 'looks' like a Pokemon name.
- * Rejects high-noise strings and garbage OCR results.
+ * Filters out low-confidence OCR "junk".
  */
-const isValidNameHeuristic = (text: string): boolean => {
-  if (text.length < 3 || text.length > 30) return false;
-  
-  // Names usually start with a Capital letter (OCR might miss it, but worth checking pattern)
-  const words = text.split(' ');
-  
-  // Too many short fragments? Probably noise.
-  if (words.length > 5) return false;
-  
-  // Does it contain a high ratio of vowels? (Gibberish usually doesn't)
-  const vowelCount = (text.match(/[aeiouy]/gi) || []).length;
-  if (vowelCount === 0 || vowelCount / text.length < 0.15) return false;
-
-  // Check for common suffixes/patterns
-  const isSpecial = /\b(ex|GX|VMAX|V|VSTAR|Star)\b/i.test(text);
-  
-  // Mostly alphabetic check
-  if (!/^[A-Za-z\s-]+$/.test(text)) return false;
-
+const isLikelyPokemonName = (text: string): boolean => {
+  if (text.length < 3 || text.length > 25) return false;
   // Check for nonsense repetitive chars (OCR glitch)
   if (/(.)\1\1/.test(text)) return false;
-
+  // Ensure we have vowels (most names aren't pure consonants)
+  const vowels = text.match(/[aeiouy]/gi);
+  if (!vowels || vowels.length < 1) return false;
   return true;
 };
 
+/**
+ * TEMPORAL VOTING SYSTEM
+ * Instead of relying on a single frame, we scan continuously and keep a buffer.
+ * We only "confirm" a name if it's seen consistently.
+ */
 export const extractNameLocally = async (canvas: HTMLCanvasElement): Promise<string | null> => {
   try {
     const w = await initOCR();
     
-    // Region of Interest: Top left where the name is located
-    // Pokemon names are always in the top bar.
+    // 1. Crop the Name Area (Top ~10%)
     const cropCanvas = document.createElement('canvas');
-    // Most names are in the left 60% of the top bar
-    const cropWidth = Math.floor(canvas.width * 0.58); 
-    const cropHeight = Math.floor(canvas.height * 0.10); // Very narrow strip for just the name
+    const cropWidth = Math.floor(canvas.width * 0.55); 
+    const cropHeight = Math.floor(canvas.height * 0.08);
     cropCanvas.width = cropWidth;
     cropCanvas.height = cropHeight;
     
     const cropCtx = cropCanvas.getContext('2d', { alpha: false });
     if (!cropCtx) return null;
 
-    // Offset slightly from the very edge where artifacts occur
-    const xOffset = Math.floor(canvas.width * 0.06);
-    const yOffset = Math.floor(canvas.height * 0.04);
+    const xOffset = Math.floor(canvas.width * 0.07);
+    const yOffset = Math.floor(canvas.height * 0.045);
 
-    cropCtx.drawImage(canvas, 
-      xOffset, yOffset, 
-      cropWidth, cropHeight, 
-      0, 0, cropWidth, cropHeight
-    );
+    cropCtx.drawImage(canvas, xOffset, yOffset, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
     
-    preprocessForOCR(cropCtx, cropWidth, cropHeight);
+    // 2. Pro-grade Preprocessing
+    preprocessWithOpenCV(cropCanvas);
     
-    const { data: { text } } = await w.recognize(cropCanvas);
+    // 3. OCR Recognition
+    const { data: { text, confidence } } = await w.recognize(cropCanvas);
     
-    // Process the text
-    const lines = text.split('\n').filter(l => l.trim().length > 0);
-    if (lines.length === 0) return null;
+    if (confidence < 40) return null; // Reject low confidence frames immediately
 
-    // Take the best line (usually the first)
-    let candidate = normalizeOCRText(lines[0]);
+    const rawCandidate = text.split('\n')[0];
+    const candidate = neuralCorrect(rawCandidate);
 
-    if (isValidNameHeuristic(candidate)) {
-      // Final cosmetic cleanup
-      return candidate
-        .replace(/\b[oO][xX]\b/gi, 'ex') // Fix 'ox' -> 'ex'
-        .replace(/\bVstar\b/gi, 'VSTAR')
-        .replace(/\bVmax\b/gi, 'VMAX')
-        .trim();
+    if (isLikelyPokemonName(candidate)) {
+      // 4. Temporal Buffer Logic
+      const count = (nameBuffer.get(candidate) || 0) + 1;
+      nameBuffer.set(candidate, count);
+
+      // If we've seen this specific name 3 times in the current session
+      if (count >= 3) {
+        // Clear other names from buffer once we have a solid lock
+        const final = candidate;
+        nameBuffer.clear();
+        return final;
+      }
+    } else {
+      // Slowly decay buffer if we get junk
+      nameBuffer.forEach((val, key) => {
+        if (val > 0) nameBuffer.set(key, val - 0.5);
+        if (val <= 0) nameBuffer.delete(key);
+      });
     }
     
     return null;
   } catch (error) {
-    console.error("Local OCR Error:", error);
+    console.error("Local Neural Scan Error:", error);
     return null;
   }
 };
