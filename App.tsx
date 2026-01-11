@@ -3,16 +3,14 @@ import React, { useState, useEffect } from 'react';
 import Scanner from './components/Scanner';
 import CardItem from './components/CardItem';
 import ManualSearch from './components/ManualSearch';
-import ImageAnalyzer from './components/ImageAnalyzer';
 import { PokemonCard } from './types';
 
-type ViewMode = 'collection' | 'scanner' | 'manual' | 'analyze';
+type ViewMode = 'collection' | 'scanner' | 'manual';
 
 const App: React.FC = () => {
   const [collection, setCollection] = useState<PokemonCard[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('collection');
   const [searchQuery, setSearchQuery] = useState('');
-  const [pendingDeepScan, setPendingDeepScan] = useState<string | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('poke_collection');
@@ -32,16 +30,10 @@ const App: React.FC = () => {
   const addCard = (card: PokemonCard) => {
     setCollection(prev => [card, ...prev]);
     setViewMode('collection');
-    setPendingDeepScan(null);
   };
 
   const removeCard = (id: string) => {
     setCollection(prev => prev.filter(card => card.id !== id));
-  };
-
-  const handleDeepScanRequest = (imageData: string) => {
-    setPendingDeepScan(imageData);
-    setViewMode('analyze');
   };
 
   const filteredCollection = collection.filter(card => 
@@ -77,13 +69,13 @@ const App: React.FC = () => {
               </button>
 
               <button
-                onClick={() => { setPendingDeepScan(null); setViewMode('analyze'); }}
+                onClick={() => setViewMode('manual')}
                 className={`p-2 sm:px-4 sm:py-2 rounded-xl font-bold text-[11px] transition-all active:scale-95 flex flex-col sm:flex-row items-center gap-1 sm:gap-2 ${
-                  viewMode === 'analyze' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+                  viewMode === 'manual' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
-                <span>PRO_ID</span>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                <span>DATABASE</span>
               </button>
 
               <button
@@ -107,15 +99,7 @@ const App: React.FC = () => {
                 isScanning={true} 
                 setIsScanning={(val) => !val && setViewMode('collection')} 
                 onCardDetected={addCard} 
-                onDeepScanRequest={handleDeepScanRequest}
             />
-          </div>
-        )}
-
-        {viewMode === 'analyze' && (
-          <div className="animate-in fade-in zoom-in duration-300">
-            <h2 className="text-3xl font-orbitron font-black text-white mb-8 tracking-tighter">NEURAL_DEEP_ANALYSIS</h2>
-            <ImageAnalyzer onAddCard={addCard} initialImage={pendingDeepScan} />
           </div>
         )}
 
@@ -161,14 +145,14 @@ const App: React.FC = () => {
                 </div>
                 <h3 className="text-lg font-bold text-slate-400">Vault Empty</h3>
                 <p className="text-slate-600 max-w-xs text-center text-xs mb-6 px-4">
-                  {searchQuery ? "No cards match your filter." : "Start your collection by scanning or looking up cards."}
+                  {searchQuery ? "No cards match your filter." : "Start your collection by scanning cards."}
                 </p>
                 <div className="flex gap-3">
                   <button onClick={() => setViewMode('scanner')} className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-black rounded-lg transition-all shadow-lg active:scale-95 uppercase tracking-widest">
                     Scan Card
                   </button>
-                  <button onClick={() => setViewMode('analyze')} className="px-5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-black rounded-lg transition-all shadow-lg active:scale-95 uppercase tracking-widest">
-                    AI Scan
+                  <button onClick={() => setViewMode('manual')} className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded-lg transition-all shadow-lg active:scale-95 uppercase tracking-widest">
+                    Manual Search
                   </button>
                 </div>
               </div>
@@ -200,13 +184,13 @@ const App: React.FC = () => {
           </button>
 
           <button 
-            onClick={() => { setPendingDeepScan(null); setViewMode('analyze'); }}
-            className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-colors ${viewMode === 'analyze' ? 'text-cyan-500' : 'text-slate-500'}`}
+            onClick={() => setViewMode('manual')}
+            className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-colors ${viewMode === 'manual' ? 'text-amber-500' : 'text-slate-500'}`}
           >
-            <div className={`p-2 rounded-xl ${viewMode === 'analyze' ? 'bg-cyan-500/10' : ''}`}>
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2-2V10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
+            <div className={`p-2 rounded-xl ${viewMode === 'manual' ? 'bg-amber-500/10' : ''}`}>
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
             </div>
-            <span className="text-[10px] font-bold uppercase tracking-tight">PRO_ID</span>
+            <span className="text-[10px] font-bold uppercase tracking-tight">Database</span>
           </button>
         </div>
       </nav>

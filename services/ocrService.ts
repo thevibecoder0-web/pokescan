@@ -5,6 +5,7 @@ let worker: any = null;
 
 export interface OCRResult {
   name: string;
+  number: string | null;
   bbox: { x0: number; y0: number; x1: number; y1: number } | null;
 }
 
@@ -39,63 +40,87 @@ const initWorker = async () => {
 };
 
 /**
- * Optimized OCR for Pokemon Cards
- * 1. Focuses ONLY on the top ~15% of the card area
- * 2. Applies image pre-processing (Grayscale + Contrast) to smaller buffers
- * 3. Dramatically reduces false positives from card body text
+ * Optimized Hybrid OCR for Pokemon Cards
+ * 1. Focuses on top 18% (Name)
+ * 2. Focuses on bottom 20% (Card Number)
  */
 export const extractNameLocally = async (sourceCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     await initWorker();
 
-    // Create a temporary "stripline" canvas for the card name area
-    // The name is always in the top 15% of a portrait card
     const nameplateCanvas = document.createElement('canvas');
     const ctx = nameplateCanvas.getContext('2d', { alpha: false });
     if (!ctx) return null;
 
-    const cropHeight = Math.floor(sourceCanvas.height * 0.18);
+    const cropHeightName = Math.floor(sourceCanvas.height * 0.18);
+    const cropHeightNumber = Math.floor(sourceCanvas.height * 0.20);
     const cropWidth = sourceCanvas.width;
     
+    // We combine both zones into one "stripline" to minimize recognition calls
     nameplateCanvas.width = cropWidth;
-    nameplateCanvas.height = cropHeight;
+    nameplateCanvas.height = cropHeightName + cropHeightNumber;
 
-    // Apply some image conditioning to help Tesseract
-    ctx.filter = 'grayscale(1) contrast(1.4)';
+    ctx.filter = 'grayscale(1) contrast(1.6)';
+    
+    // Draw Name Zone (Top)
     ctx.drawImage(
       sourceCanvas, 
-      0, 0, sourceCanvas.width, cropHeight, // source
-      0, 0, cropWidth, cropHeight // dest
+      0, 0, sourceCanvas.width, cropHeightName,
+      0, 0, cropWidth, cropHeightName
     );
 
-    // Run recognition on the small, processed buffer (much faster)
+    // Draw Number Zone (Bottom)
+    ctx.drawImage(
+      sourceCanvas,
+      0, sourceCanvas.height - cropHeightNumber, sourceCanvas.width, cropHeightNumber,
+      0, cropHeightName, cropWidth, cropHeightNumber
+    );
+
     const { data } = await worker.recognize(nameplateCanvas);
     
+    let detectedName: string | null = null;
+    let detectedNumber: string | null = null;
+    let nameBbox: any = null;
+
     for (const word of data.words) {
-      // Basic cleanup: ignore small artifacts
-      const cleanWord = word.text.trim().replace(/[^a-zA-Z]/g, '');
-      if (cleanWord.length < 3) continue;
+      const text = word.text.trim();
+      
+      // Look for Card Number Patterns (e.g., 123/191 or 036)
+      if (!detectedNumber) {
+        const numMatch = text.match(/(\d{1,3}\/\d{1,3})|(\d{3})/);
+        if (numMatch) {
+          detectedNumber = numMatch[0];
+        }
+      }
 
-      // Check against species list with strictness based on word length
-      for (const species of POKEMON_SPECIES) {
-        const dist = getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase());
-        
-        // Strict matching logic to prevent false positives
-        const isMatch = (cleanWord.length <= 4 && dist === 0) || // Short names (Mew) must be exact
-                        (cleanWord.length > 4 && dist <= 1);    // Longer names allow 1 error
-
-        if (isMatch) {
-          return {
-            name: species,
-            bbox: {
+      // Look for Pokemon Name
+      if (!detectedName) {
+        const cleanWord = text.replace(/[^a-zA-Z]/g, '');
+        if (cleanWord.length >= 3) {
+          for (const species of POKEMON_SPECIES) {
+            const dist = getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase());
+            const isMatch = (cleanWord.length <= 4 && dist === 0) || (cleanWord.length > 4 && dist <= 1);
+            if (isMatch) {
+              detectedName = species;
+              nameBbox = {
                 x0: word.bbox.x0,
                 y0: word.bbox.y0,
                 x1: word.bbox.x1,
                 y1: word.bbox.y1
+              };
+              break;
             }
-          };
+          }
         }
       }
+    }
+    
+    if (detectedName) {
+      return {
+        name: detectedName,
+        number: detectedNumber,
+        bbox: nameBbox
+      };
     }
     
     return null;
