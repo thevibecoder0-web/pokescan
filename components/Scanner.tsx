@@ -3,6 +3,8 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { identifyPokemonCard } from '../services/geminiService';
 import { PokemonCard } from '../types';
 
+declare const cv: any; // Global OpenCV.js instance
+
 interface Point {
   x: number;
   y: number;
@@ -28,6 +30,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cvReady, setCvReady] = useState(false);
   const [detectedName, setDetectedName] = useState<string | null>(null);
   
   // Real-time tracking state
@@ -37,6 +40,18 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     bl: { x: 25, y: 75 },
     br: { x: 75, y: 75 }
   });
+
+  // Check for OpenCV.js availability
+  useEffect(() => {
+    const checkCV = () => {
+      if (typeof cv !== 'undefined' && cv.Mat) {
+        setCvReady(true);
+      } else {
+        setTimeout(checkCV, 500);
+      }
+    };
+    checkCV();
+  }, []);
 
   const startCamera = async () => {
     try {
@@ -63,16 +78,19 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   };
 
   /**
-   * ROBUST CARD DETECTION ALGORITHM
-   * 1. Downsample video frame.
-   * 2. Calculate pixel gradients (Edge Detection).
-   * 3. Find extreme points using Projection (Sum/Diff of coordinates).
-   * 4. LERP (Linear Interpolation) for smooth tracking.
+   * ADVANCED OPENCV CARD DETECTION
+   * 1. Grayscale & Gaussian Blur
+   * 2. Canny Edge Detection
+   * 3. Contour Extraction
+   * 4. Quadrilateral Approximation (approxPolyDP)
+   * 5. Sort Corners by Perspective
    */
   useEffect(() => {
-    if (!isScanning) return;
+    if (!isScanning || !cvReady) return;
 
     let animationFrameId: number;
+    let gray: any, blurred: any, edges: any, contours: any, hierarchy: any;
+
     const processFrame = () => {
       if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
         const video = videoRef.current;
@@ -82,79 +100,98 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) return;
 
-        // Downsample for performance (approx 100-160px width is plenty for feature tracking)
-        const width = 120;
+        // Downsample to 320px width for smooth real-time processing
+        const width = 320;
         const height = Math.floor((video.videoHeight / video.videoWidth) * width);
         canvas.width = width;
         canvas.height = height;
         ctx.drawImage(video, 0, 0, width, height);
 
-        const imageData = ctx.getImageData(0, 0, width, height);
-        const data = imageData.data;
-        
-        // Extremal Points based on projections
-        // TL: min(x+y), TR: max(x-y), BR: max(x+y), BL: min(x-y)
-        let minSum = Infinity, maxSum = -Infinity;
-        let minDiff = Infinity, maxDiff = -Infinity;
-        
-        let pTL = { x: 25, y: 25 }, pTR = { x: 75, y: 25 };
-        let pBR = { x: 75, y: 75 }, pBL = { x: 25, y: 75 };
-        
-        let found = false;
-        const threshold = 35; // Gradient magnitude threshold
+        try {
+          const src = cv.imread(canvas);
+          if (!gray) gray = new cv.Mat();
+          if (!blurred) blurred = new cv.Mat();
+          if (!edges) edges = new cv.Mat();
+          
+          cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+          cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+          cv.Canny(blurred, edges, 50, 150);
+          
+          if (!contours) contours = new cv.MatVector();
+          if (!hierarchy) hierarchy = new cv.Mat();
+          
+          cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+          
+          let maxArea = 0;
+          let bestContour: any = null;
 
-        for (let y = 1; y < height - 1; y++) {
-          for (let x = 1; x < width - 1; x++) {
-            const idx = (y * width + x) * 4;
-            
-            // Simple Gradient Magnitude (Sobel approximation)
-            // L(x,y) = brightness
-            const getL = (ox: number, oy: number) => {
-              const i = ((y + oy) * width + (x + ox)) * 4;
-              return (data[i] + data[i+1] + data[i+2]) / 3;
-            };
-            
-            const dx = getL(1, 0) - getL(-1, 0);
-            const dy = getL(0, 1) - getL(0, -1);
-            const mag = Math.sqrt(dx*dx + dy*dy);
-
-            if (mag > threshold) {
-              const sum = x + y;
-              const diff = x - y;
+          for (let i = 0; i < contours.size(); ++i) {
+            const cnt = contours.get(i);
+            const area = cv.contourArea(cnt);
+            if (area > (width * height * 0.15)) { // Must be at least 15% of frame
+              const peri = cv.arcLength(cnt, true);
+              const approx = new cv.Mat();
+              cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
               
-              if (sum < minSum) { minSum = sum; pTL = { x, y }; }
-              if (sum > maxSum) { maxSum = sum; pBR = { x, y }; }
-              if (diff < minDiff) { minDiff = diff; pBL = { x, y }; }
-              if (diff > maxDiff) { maxDiff = diff; pTR = { x, y }; }
-              found = true;
+              if (approx.rows === 4 && area > maxArea) {
+                maxArea = area;
+                if (bestContour) bestContour.delete();
+                bestContour = approx;
+              } else {
+                approx.delete();
+              }
             }
           }
-        }
 
-        if (found) {
-          // Normalize to percentages (0-100)
-          const targetCorners = {
-            tl: { x: (pTL.x / width) * 100, y: (pTL.y / height) * 100 },
-            tr: { x: (pTR.x / width) * 100, y: (pTR.y / height) * 100 },
-            bl: { x: (pBL.x / width) * 100, y: (pBL.y / height) * 100 },
-            br: { x: (pBR.x / width) * 100, y: (pBR.y / height) * 100 }
-          };
+          if (bestContour) {
+            const points: Point[] = [];
+            for (let i = 0; i < 4; i++) {
+              points.push({
+                x: bestContour.data32S[i * 2],
+                y: bestContour.data32S[i * 2 + 1]
+              });
+            }
 
-          // LERP for smooth UI transition (25% step)
-          setCorners(prev => ({
-            tl: { x: prev.tl.x + (targetCorners.tl.x - prev.tl.x) * 0.25, y: prev.tl.y + (targetCorners.tl.y - prev.tl.y) * 0.25 },
-            tr: { x: prev.tr.x + (targetCorners.tr.x - prev.tr.x) * 0.25, y: prev.tr.y + (targetCorners.tr.y - prev.tr.y) * 0.25 },
-            bl: { x: prev.bl.x + (targetCorners.bl.x - prev.bl.x) * 0.25, y: prev.bl.y + (targetCorners.bl.y - prev.bl.y) * 0.25 },
-            br: { x: prev.br.x + (targetCorners.br.x - prev.br.x) * 0.25, y: prev.br.y + (targetCorners.br.y - prev.br.y) * 0.25 },
-          }));
+            // Sort points: top-left, top-right, bottom-right, bottom-left
+            points.sort((a, b) => a.y - b.y);
+            const top = points.slice(0, 2).sort((a, b) => a.x - b.x);
+            const bottom = points.slice(2, 4).sort((a, b) => a.x - b.x);
+            
+            const targetCorners = {
+              tl: { x: (top[0].x / width) * 100, y: (top[0].y / height) * 100 },
+              tr: { x: (top[1].x / width) * 100, y: (top[1].y / height) * 100 },
+              br: { x: (bottom[1].x / width) * 100, y: (bottom[1].y / height) * 100 },
+              bl: { x: (bottom[0].x / width) * 100, y: (bottom[0].y / height) * 100 }
+            };
+
+            setCorners(prev => ({
+              tl: { x: prev.tl.x + (targetCorners.tl.x - prev.tl.x) * 0.3, y: prev.tl.y + (targetCorners.tl.y - prev.tl.y) * 0.3 },
+              tr: { x: prev.tr.x + (targetCorners.tr.x - prev.tr.x) * 0.3, y: prev.tr.y + (targetCorners.tr.y - prev.tr.y) * 0.3 },
+              bl: { x: prev.bl.x + (targetCorners.bl.x - prev.bl.x) * 0.3, y: prev.bl.y + (targetCorners.bl.y - prev.bl.y) * 0.3 },
+              br: { x: prev.br.x + (targetCorners.br.x - prev.br.x) * 0.3, y: prev.br.y + (targetCorners.br.y - prev.br.y) * 0.3 },
+            }));
+            
+            bestContour.delete();
+          }
+
+          src.delete();
+        } catch (err) {
+          console.warn("OpenCV Processing Error:", err);
         }
       }
       animationFrameId = requestAnimationFrame(processFrame);
     };
 
     processFrame();
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [isScanning]);
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      if (gray) gray.delete();
+      if (blurred) blurred.delete();
+      if (edges) edges.delete();
+      if (contours) contours.delete();
+      if (hierarchy) hierarchy.delete();
+    };
+  }, [isScanning, cvReady]);
 
   useEffect(() => {
     if (isScanning) {
@@ -185,14 +222,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (result && result.name && result.name.toLowerCase() !== 'unknown') {
         setDetectedName(result.name);
       } else {
-        setDetectedName("Detection Failed");
+        setDetectedName("Extraction Failed");
         setTimeout(() => setDetectedName(null), 3000);
       }
     }
     setLoading(false);
   }, [loading]);
 
-  // Dynamic CSS Polygon for perspective distortion
   const clipPath = `polygon(${corners.tl.x}% ${corners.tl.y}%, ${corners.tr.x}% ${corners.tr.y}%, ${corners.br.x}% ${corners.br.y}%, ${corners.bl.x}% ${corners.bl.y}%)`;
 
   return (
@@ -210,21 +246,30 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               ref={videoRef}
               autoPlay
               playsInline
-              className="w-full h-full object-cover opacity-70 grayscale contrast-125"
+              className={`w-full h-full object-cover transition-opacity duration-1000 ${cvReady ? 'opacity-70 contrast-125' : 'opacity-20'}`}
             />
             
             {/* Perspective HUD Layer */}
             <div className="absolute inset-0 pointer-events-none">
+              {!cvReady && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                   <div className="flex flex-col items-center gap-4">
+                      <div className="w-12 h-12 border-4 border-slate-700 border-t-red-600 rounded-full animate-spin"></div>
+                      <span className="font-orbitron text-[10px] text-slate-500 tracking-[0.3em]">INITIALIZING CV_ENGINE</span>
+                   </div>
+                </div>
+              )}
+
               {/* Dynamic perspective frame */}
               <div 
                 className={`absolute inset-0 border-2 transition-colors duration-300 ${loading ? 'border-yellow-400' : 'border-red-500/40'}`}
                 style={{ clipPath, backgroundColor: loading ? 'rgba(250,204,21,0.1)' : 'rgba(239, 68, 68, 0.05)' }}
               >
                 {/* HUD Elements at Corners */}
-                <div style={{ position: 'absolute', top: `${corners.tl.y}%`, left: `${corners.tl.x}%`, transform: 'translate(-50%, -50%)' }} className="w-6 h-6 border-t-2 border-l-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
-                <div style={{ position: 'absolute', top: `${corners.tr.y}%`, left: `${corners.tr.x}%`, transform: 'translate(50%, -50%)' }} className="w-6 h-6 border-t-2 border-r-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
-                <div style={{ position: 'absolute', top: `${corners.bl.y}%`, left: `${corners.bl.x}%`, transform: 'translate(-50%, 50%)' }} className="w-6 h-6 border-b-2 border-l-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
-                <div style={{ position: 'absolute', top: `${corners.br.y}%`, left: `${corners.br.x}%`, transform: 'translate(50%, 50%)' }} className="w-6 h-6 border-b-2 border-r-2 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
+                <div style={{ position: 'absolute', top: `${corners.tl.y}%`, left: `${corners.tl.x}%`, transform: 'translate(-50%, -50%)' }} className="w-6 h-6 border-t-2 border-l-2 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.7)]"></div>
+                <div style={{ position: 'absolute', top: `${corners.tr.y}%`, left: `${corners.tr.x}%`, transform: 'translate(50%, -50%)' }} className="w-6 h-6 border-t-2 border-r-2 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.7)]"></div>
+                <div style={{ position: 'absolute', top: `${corners.bl.y}%`, left: `${corners.bl.x}%`, transform: 'translate(-50%, 50%)' }} className="w-6 h-6 border-b-2 border-l-2 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.7)]"></div>
+                <div style={{ position: 'absolute', top: `${corners.br.y}%`, left: `${corners.br.x}%`, transform: 'translate(50%, 50%)' }} className="w-6 h-6 border-b-2 border-r-2 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.7)]"></div>
               </div>
 
               {/* Top-Left Dynamic Label */}
@@ -233,7 +278,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 style={{ 
                   top: `calc(${corners.tl.y}% - 50px)`, 
                   left: `${corners.tl.x}%`,
-                  opacity: (corners.tl.y > 5 && corners.tl.x > 5) ? 1 : 0,
+                  opacity: (cvReady && corners.tl.y > 5 && corners.tl.x > 5) ? 1 : 0,
                   transform: 'scale(0.9)'
                 }}
               >
@@ -242,17 +287,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                   {loading && <div className="absolute inset-0 w-3 h-3 rounded-full bg-yellow-500"></div>}
                 </div>
                 <span className="text-[12px] font-orbitron font-black uppercase tracking-[0.15em] text-white">
-                  {loading ? 'CALIBRATING...' : (detectedName || 'SCANNING ASSET')}
+                  {loading ? 'ANALYZING...' : (detectedName || 'CARD DETECTED')}
                 </span>
               </div>
 
               {/* Version Identifier */}
               <div className="absolute bottom-6 left-6 flex flex-col gap-1">
                 <div className="text-[10px] font-orbitron font-black text-white/40 uppercase tracking-[0.3em]">
-                   SYSTEM_ID: POKE-SCAN_7
+                   SYSTEM_ID: OPENCV_X8
                 </div>
                 <div className="text-[9px] font-orbitron font-bold text-red-500/60 uppercase tracking-widest">
-                   v1.0.7 - ENHANCED_TRACKING
+                   v1.0.8 - COMPUTER_VISION_ENABLED
                 </div>
               </div>
             </div>
@@ -266,7 +311,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
               </button>
 
-              <button onClick={captureFrame} disabled={loading} className="group relative">
+              <button onClick={captureFrame} disabled={loading || !cvReady} className="group relative">
                 <div className={`w-28 h-28 rounded-full border-8 flex items-center justify-center transition-all duration-300 ${
                     loading ? 'border-yellow-500 bg-yellow-500/10' : 'border-white bg-red-600 shadow-[0_0_60px_rgba(220,38,38,0.5)]'
                 }`}>
@@ -276,7 +321,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                     <div className="w-16 h-16 rounded-full bg-white group-hover:scale-95 transition-transform shadow-[inset_0_2px_10px_rgba(0,0,0,0.2)]"></div>
                   )}
                 </div>
-                {!loading && <div className="absolute -inset-2 rounded-full border-2 border-red-500/20 animate-ping pointer-events-none"></div>}
+                {!loading && cvReady && <div className="absolute -inset-2 rounded-full border-2 border-red-500/20 animate-ping pointer-events-none"></div>}
               </button>
               
               <div className="w-14 h-14"></div>
@@ -288,7 +333,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 <div className="w-12 h-12 bg-red-600 rounded-full"></div>
              </div>
              <button onClick={startCamera} className="px-10 py-4 bg-red-600 hover:bg-red-700 text-white font-black rounded-2xl shadow-2xl transition-all uppercase tracking-[0.3em] text-xs active:scale-95 border border-red-400/30">
-               Sync Optical Sensor
+               Initialize Optical HUD
              </button>
           </div>
         )}
