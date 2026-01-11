@@ -19,6 +19,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cardCanvasRef = useRef<HTMLCanvasElement>(null);
+  const frozenFrameRef = useRef<any>(null); // Mat for the frozen frame
+  
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [detectedData, setDetectedData] = useState<OCRResult | null>(null);
   const [cvReady, setCvReady] = useState(false);
@@ -32,9 +34,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [scanResult, setScanResult] = useState<{name: string, price: string} | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showWarped, setShowWarped] = useState(false);
+  const [isFrozen, setIsFrozen] = useState(false);
+  const [freezeCountdown, setFreezeCountdown] = useState(5);
   
   const lastFoundTime = useRef<number>(0);
   const lastDeepScanTime = useRef<number>(0);
+  const freezeStartTimeRef = useRef<number>(0);
   const animationFrameRef = useRef<number>(null);
 
   useEffect(() => {
@@ -102,8 +107,32 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return () => animationFrameRef.current && cancelAnimationFrame(animationFrameRef.current);
   }, [targetCorners]);
 
+  // Handle high-level freeze state and timeout logic
+  useEffect(() => {
+    let timer: number;
+    if (isFrozen) {
+      timer = window.setInterval(() => {
+        const elapsed = (Date.now() - freezeStartTimeRef.current) / 1000;
+        const remaining = Math.max(0, 5 - Math.floor(elapsed));
+        setFreezeCountdown(remaining);
+        
+        if (elapsed >= 5 && !scanResult) {
+          // Timeout: Reset signal and search again
+          setIsFrozen(false);
+          setTargetCorners(null);
+          setDetectedData(null);
+          if (frozenFrameRef.current) {
+            frozenFrameRef.current.delete();
+            frozenFrameRef.current = null;
+          }
+        }
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [isFrozen, scanResult]);
+
   const detectCardWithCV = useCallback(() => {
-    if (!cvReady || !videoRef.current || !canvasRef.current) return;
+    if (!cvReady || !videoRef.current || !canvasRef.current || isFrozen) return;
     const v = videoRef.current;
     const c = canvasRef.current;
     const ctx = c.getContext('2d', { alpha: false });
@@ -151,12 +180,21 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         cnt.delete();
       }
 
-      if (found) { setTargetCorners(found); lastFoundTime.current = Date.now(); }
+      if (found) { 
+        setTargetCorners(found); 
+        lastFoundTime.current = Date.now();
+        // TRIGGER SIGNAL LOCK
+        setIsFrozen(true);
+        setFreezeCountdown(5);
+        freezeStartTimeRef.current = Date.now();
+        // Capture the frozen frame
+        frozenFrameRef.current = cv.imread(v);
+      }
       else if (Date.now() - lastFoundTime.current > 300) setTargetCorners(null);
 
       src.delete(); gray.delete(); claheMat.delete(); clahe.delete(); blurred.delete(); thresh.delete(); edges.delete(); k.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {}
-  }, [cvReady]);
+  }, [cvReady, isFrozen]);
 
   const triggerDeepScan = async () => {
     if (isDeepScanning || !videoRef.current || !cardCanvasRef.current || Date.now() - lastDeepScanTime.current < 3000) return;
@@ -170,24 +208,26 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         onCardDetected({ ...res, id: Math.random().toString(36).substr(2,9), scanDate: new Date().toLocaleDateString(), imageUrl: c.toDataURL() });
         setScanResult({ name: res.name, price: res.marketValue || "--" });
         setTimeout(() => setScanResult(null), 2000);
+        // Clear freeze state on success
+        setIsFrozen(false);
       }
     } catch (e) {} finally { setIsDeepScanning(false); }
   };
 
   const processFrame = async () => {
-    if (!targetCorners || !cvReady || !videoRef.current || !cardCanvasRef.current || isProcessing) return;
+    if (!targetCorners || !cvReady || isProcessing) return;
     setIsProcessing(true);
     try {
-      let src = cv.imread(videoRef.current), dst = new cv.Mat(), dsize = new cv.Size(400, 560);
+      // Use frozen frame if available, otherwise fallback to video (though it shouldn't hit fallback while frozen)
+      let src = frozenFrameRef.current ? frozenFrameRef.current.clone() : cv.imread(videoRef.current);
+      let dst = new cv.Mat(), dsize = new cv.Size(400, 560);
       let sc = cv.matFromArray(4, 1, cv.CV_32FC2, [targetCorners.tl.x, targetCorners.tl.y, targetCorners.tr.x, targetCorners.tr.y, targetCorners.br.x, targetCorners.br.y, targetCorners.bl.x, targetCorners.bl.y]);
       let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 400, 0, 400, 560, 0, 560]);
       let M = cv.getPerspectiveTransform(sc, dc);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
       
-      // SHOW WARPED VIEW ON MAIN SCREEN
       cv.imshow(cardCanvasRef.current, dst);
       
-      // Secondary logic for OCR on the same warped frame
       let ocrMat = new cv.Mat();
       cv.cvtColor(dst, ocrMat, cv.COLOR_RGBA2GRAY);
       cv.bilateralFilter(ocrMat, ocrMat, 9, 75, 75);
@@ -203,8 +243,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           onCardDetected({ id: Math.random().toString(36).substr(2,9), name: res.name, number: res.number, set: "Neural Scan", rarity: "Common", type: "Unknown", marketValue: "$--.--", scanDate: new Date().toLocaleDateString(), imageUrl: cardCanvasRef.current.toDataURL() });
           setScanResult({ name: res.name, price: "--" });
           setTimeout(() => setScanResult(null), 1500);
+          // Success: Release signal lock
+          setIsFrozen(false);
         }
-      } else if (Date.now() - lastFoundTime.current > 1000) {
+      } else if (Date.now() - freezeStartTimeRef.current > 1500) {
+        // Struggling on frozen frame? Hand off to Gemini
         triggerDeepScan();
       }
       src.delete(); dst.delete(); ocrMat.delete(); M.delete(); sc.delete(); dc.delete();
@@ -214,10 +257,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   useEffect(() => {
     let int: number;
     if (isScanning && cvReady && !scanResult) {
-      int = window.setInterval(() => { detectCardWithCV(); if (targetCorners) processFrame(); }, 80);
+      int = window.setInterval(() => { 
+        if (!isFrozen) detectCardWithCV(); 
+        if (targetCorners) processFrame(); 
+      }, 80);
     }
     return () => clearInterval(int);
-  }, [isScanning, cvReady, targetCorners, isProcessing, scanResult]);
+  }, [isScanning, cvReady, targetCorners, isProcessing, scanResult, isFrozen]);
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
@@ -233,18 +279,32 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       <div className={`absolute inset-0 z-10 flex items-center justify-center transition-all duration-500 transform ${showWarped ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
           <canvas 
             ref={cardCanvasRef} 
-            className="w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.5)] border-4 border-cyan-400/30 rounded-2xl"
+            className={`w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.5)] border-4 rounded-2xl transition-all duration-500 ${isFrozen ? 'border-cyan-400 brightness-110' : 'border-white/20'}`}
           />
           {/* Scanning Scanline Effect over the warped view */}
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/20 to-transparent h-20 w-full animate-scanline pointer-events-none" />
+          
+          {isFrozen && (
+             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none">
+                <div className="w-16 h-16 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin mb-4" />
+                <div className="bg-cyan-500 text-slate-950 font-orbitron font-black px-6 py-2 rounded-full uppercase text-xs tracking-[0.2em] shadow-2xl">
+                   Neural Signal Locked
+                </div>
+             </div>
+          )}
       </div>
 
       {/* Simplified Detection HUD */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-4 duration-500">
-        <div className={`bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-full px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300 ${detectedData?.name ? 'border-cyan-400/50' : ''}`}>
+        <div className={`bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-full px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300 ${isFrozen ? 'border-cyan-400/50 ring-2 ring-cyan-400/20' : ''}`}>
           <div className="flex items-center gap-4">
+            {isFrozen && (
+               <div className="flex items-center gap-2 px-3 py-1 bg-cyan-500/20 rounded-lg border border-cyan-500/30">
+                  <span className="text-[10px] font-orbitron font-black text-cyan-400">{freezeCountdown}s</span>
+               </div>
+            )}
             <span className="text-xl font-orbitron font-black text-white uppercase tracking-tighter">
-              {detectedData?.name || (isDeepScanning ? 'SEARCHING ARCHIVES...' : '---')}
+              {detectedData?.name || (isDeepScanning ? 'SEARCHING ARCHIVES...' : (isFrozen ? 'EXTRACTING...' : '---'))}
             </span>
             {detectedData?.number && (
               <>
@@ -257,16 +317,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           </div>
         </div>
       </div>
-
-      {/* Corner Tracking Overlay (Only visible when not warped) */}
-      {visualCorners && viewBox.w > 0 && !scanResult && !showWarped && (
-        <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden animate-out fade-out duration-300">
-          <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
-             <path d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`} className="fill-transparent stroke-[4px] stroke-white/40" />
-             {[visualCorners.tl, visualCorners.tr, visualCorners.bl, visualCorners.br].map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="8" className="fill-cyan-400 stroke-black stroke-2" />)}
-          </svg>
-        </div>
-      )}
 
       {scanResult && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[60]">
