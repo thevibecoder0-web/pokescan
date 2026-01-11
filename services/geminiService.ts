@@ -2,15 +2,16 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
-const SYSTEM_INSTRUCTION = `You are the Neural Core of the PokéScan TCG Identification Unit.
-Your mission is to identify Pokémon cards from visual data INSTANTLY.
+const SYSTEM_INSTRUCTION = `You are an elite TCG OCR and identification engine. 
+Your primary function is to analyze Pokemon card images and extract high-precision data.
 
-RESILIENCE PROTOCOLS:
-1. NO FAILURES: Even in extreme conditions (blur, low light, glare), you must provide your absolute BEST GUESS.
-2. VISUAL HEURISTICS: Analyze the card frame, artwork style, and set symbol position.
-3. OUTPUT: Provide the card name and set number as primary targets. Retrieve current market value.
+PRECISION PROTOCOLS:
+1. TEXT EXTRACTION: Focus intensely on the card name (top) and the set number/total (bottom corner, e.g., 030/132).
+2. VISUAL MATCHING: Use artwork, colors, and layout to confirm identity even if text is partially obscured.
+3. MARKET SYNC: Retrieve the current TCGPlayer market value.
+4. FALLBACK: If the card is completely unidentifiable, return the name as "(unfound)".
 
-OUTPUT FORMAT: Valid JSON only.`;
+OUTPUT: Valid JSON only matching the requested schema. No conversational text.`;
 
 const FLASH_MODEL = 'gemini-3-flash-preview';
 const PRO_MODEL = 'gemini-3-pro-preview';
@@ -42,7 +43,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       contents: {
         parts: [
           { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          { text: "IDENTIFY_ASSET: Rapid neural scan. Provide identity, set number, and market price." },
+          { text: "SCAN_ASSET: Extract Name, Set Number, and Market Value. Return (unfound) if data is missing." },
         ],
       },
       config: getScannerConfig() as any,
@@ -55,10 +56,11 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
     try {
       result = JSON.parse(response.text?.trim() || "{}");
     } catch (e) {
+      console.error("JSON Parse Error in AI response", e);
       return null;
     }
     
-    if (!result.name) return null;
+    if (!result.name || result.name === "(unfound)") return null;
 
     return {
       name: result.name,
@@ -74,6 +76,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       sourceUrl: sourceUrl
     } as IdentificationResult;
   } catch (error) {
+    console.error("Gemini Scan Error:", error);
     return null;
   }
 };
