@@ -31,6 +31,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [viewBox, setViewBox] = useState({ w: 0, h: 0 });
   const [scanResult, setScanResult] = useState<{name: string, price: string} | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showWarped, setShowWarped] = useState(false);
   
   const lastFoundTime = useRef<number>(0);
   const lastDeepScanTime = useRef<number>(0);
@@ -90,7 +91,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           bl: { x: lerp(p.bl.x, targetCorners.bl.x, 0.35), y: lerp(p.bl.y, targetCorners.bl.y, 0.35) },
           br: { x: lerp(p.br.x, targetCorners.br.x, 0.35), y: lerp(p.br.y, targetCorners.br.y, 0.35) }
         } : targetCorners);
-      } else setVisualCorners(null);
+        setShowWarped(true);
+      } else {
+        setVisualCorners(null);
+        setShowWarped(false);
+      }
       animationFrameRef.current = requestAnimationFrame(anim);
     };
     animationFrameRef.current = requestAnimationFrame(anim);
@@ -112,17 +117,14 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let src = cv.imread(c), gray = new cv.Mat(), claheMat = new cv.Mat(), blurred = new cv.Mat(), thresh = new cv.Mat(), edges = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
       
-      // EXTREME LIGHT HANDLING: CLAHE + Adaptive Thresholding for border isolation
       let clahe = new cv.CLAHE(4.0, new cv.Size(8, 8));
       clahe.apply(gray, claheMat);
       cv.GaussianBlur(claheMat, blurred, new cv.Size(9, 9), 0);
       
-      // Use large block size to ignore localized flash hotspots
       cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, 31, 10);
       cv.Canny(blurred, edges, 40, 120);
       cv.bitwise_or(thresh, edges, thresh);
       
-      // Heavy morphology to bridge gaps in borders caused by intense glare
       let k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
       cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, k);
       
@@ -182,20 +184,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let M = cv.getPerspectiveTransform(sc, dc);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
       
-      // ADVANCED OCR ENHANCEMENT: Convert, bilateral filter (denoise while preserving edges), and adaptive thresholding
-      let tmp = new cv.Mat();
-      cv.cvtColor(dst, tmp, cv.COLOR_RGBA2GRAY);
-      
-      // Bilateral filter for cleaning texture noise without blurring text edges
-      cv.bilateralFilter(tmp, dst, 9, 75, 75);
-      
-      // Final sharpening for Tesseract
-      let kernel = cv.matFromArray(3, 3, cv.CV_32F, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
-      cv.filter2D(dst, dst, cv.CV_8U, kernel);
-      kernel.delete();
-
-      cv.threshold(dst, dst, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+      // SHOW WARPED VIEW ON MAIN SCREEN
       cv.imshow(cardCanvasRef.current, dst);
+      
+      // Secondary logic for OCR on the same warped frame
+      let ocrMat = new cv.Mat();
+      cv.cvtColor(dst, ocrMat, cv.COLOR_RGBA2GRAY);
+      cv.bilateralFilter(ocrMat, ocrMat, 9, 75, 75);
+      let kernel = cv.matFromArray(3, 3, cv.CV_32F, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
+      cv.filter2D(ocrMat, ocrMat, cv.CV_8U, kernel);
+      kernel.delete();
+      cv.threshold(ocrMat, ocrMat, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
       
       const res = await extractNameLocally(cardCanvasRef.current);
       if (res) {
@@ -208,7 +207,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       } else if (Date.now() - lastFoundTime.current > 1000) {
         triggerDeepScan();
       }
-      src.delete(); dst.delete(); tmp.delete(); M.delete(); sc.delete(); dc.delete();
+      src.delete(); dst.delete(); ocrMat.delete(); M.delete(); sc.delete(); dc.delete();
     } catch (e) {} finally { setIsProcessing(false); }
   };
 
@@ -222,10 +221,27 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
-      <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
+      {/* Background Camera Stream */}
+      <video 
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        className={`w-full h-full object-cover transition-all duration-700 ${showWarped ? 'opacity-20 blur-xl scale-110' : 'opacity-80 scale-100'}`} 
+      />
       
+      {/* Warp Perspective Zoom Layer */}
+      <div className={`absolute inset-0 z-10 flex items-center justify-center transition-all duration-500 transform ${showWarped ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
+          <canvas 
+            ref={cardCanvasRef} 
+            className="w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.5)] border-4 border-cyan-400/30 rounded-2xl"
+          />
+          {/* Scanning Scanline Effect over the warped view */}
+          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/20 to-transparent h-20 w-full animate-scanline pointer-events-none" />
+      </div>
+
+      {/* Simplified Detection HUD */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-4 duration-500">
-        <div className="bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-full px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300">
+        <div className={`bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-full px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300 ${detectedData?.name ? 'border-cyan-400/50' : ''}`}>
           <div className="flex items-center gap-4">
             <span className="text-xl font-orbitron font-black text-white uppercase tracking-tighter">
               {detectedData?.name || (isDeepScanning ? 'SEARCHING ARCHIVES...' : '---')}
@@ -242,17 +258,18 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         </div>
       </div>
 
-      {visualCorners && viewBox.w > 0 && !scanResult && (
-        <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
+      {/* Corner Tracking Overlay (Only visible when not warped) */}
+      {visualCorners && viewBox.w > 0 && !scanResult && !showWarped && (
+        <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden animate-out fade-out duration-300">
           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
-             <path d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`} className={`fill-transparent stroke-[4px] transition-all duration-300 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,1)]' : 'stroke-white/40'}`} />
+             <path d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`} className="fill-transparent stroke-[4px] stroke-white/40" />
              {[visualCorners.tl, visualCorners.tr, visualCorners.bl, visualCorners.br].map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="8" className="fill-cyan-400 stroke-black stroke-2" />)}
           </svg>
         </div>
       )}
 
       {scanResult && (
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-50">
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[60]">
            <div className="bg-slate-900/95 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
               <div className="w-20 h-20 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-6"><svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg></div>
               <div className="text-4xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter">{scanResult.name}</div>
@@ -262,13 +279,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       )}
 
       {torchSupported && (
-        <button onClick={toggleTorch} className={`absolute bottom-10 right-10 pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white shadow-[0_0_30px_rgba(251,191,36,0.4)]' : 'bg-slate-900/90 text-slate-400'}`}>
+        <button onClick={toggleTorch} className={`absolute bottom-10 right-10 z-50 pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white shadow-[0_0_30px_rgba(251,191,36,0.4)]' : 'bg-slate-900/90 text-slate-400'}`}>
           <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
         </button>
       )}
 
       <canvas ref={canvasRef} className="hidden" />
-      <canvas ref={cardCanvasRef} className="hidden" />
     </div>
   );
 };
