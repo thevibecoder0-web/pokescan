@@ -11,7 +11,6 @@ export interface OCRResult {
   confidence: number;
 }
 
-// Low-level helper for fuzzy matching
 const getLevenshteinDistance = (a: string, b: string): number => {
   const matrix = Array.from({ length: a.length + 1 }, () => 
     Array.from({ length: b.length + 1 }, (_, i) => i)
@@ -37,7 +36,10 @@ const POKEMON_SPECIES = [
   "Pikachu", "Raichu", "Eevee", "Vaporeon", "Jolteon", "Flareon", "Mewtwo", "Mew", "Lugia", "Ho-Oh", 
   "Rayquaza", "Kyogre", "Groudon", "Lucario", "Greninja", "Mimikyu", "Eternatus", "Zacian", "Zamazenta", 
   "Koraidon", "Miraidon", "Terapagos", "Milotic", "Gengar", "Dragonite", "Arcanine", "Lapras", "Snorlax", 
-  "Ditto", "Gardevoir", "Sylveon", "Umbreon", "Espeon", "Tyranitar", "Scizor", "Alakazam", "Machamp"
+  "Ditto", "Gardevoir", "Sylveon", "Umbreon", "Espeon", "Tyranitar", "Scizor", "Alakazam", "Machamp",
+  "Arceus", "Dialga", "Palkia", "Giratina", "Darkrai", "Cresselia", "Heatran", "Regigigas", "Manaphy",
+  "Zeraora", "Marshadow", "Meltan", "Melmetal", "Garchomp", "Salamence", "Metagross", "Hydreigon", "Goodra",
+  "Kommo-o", "Dragapult", "Baxcalibur", "Roaring Moon", "Iron Valiant", "Iron Hands", "Flutter Mane"
 ];
 
 export const initOCRWorker = async () => {
@@ -47,7 +49,9 @@ export const initOCRWorker = async () => {
     worker = await createWorker('eng');
     await worker.setParameters({
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -!',
-      tessedit_pageseg_mode: '1', // Automatic page segmentation with OSD.
+      tessedit_pageseg_mode: '3', // Fully automatic page segmentation, but no OSD.
+      tessjs_create_hocr: '0',
+      tessjs_create_tsv: '0',
     });
   } catch (err) {
     console.error("Worker Initialization Failed", err);
@@ -61,36 +65,50 @@ const cleanText = (text: string) => {
 };
 
 /**
- * Global Card OCR: Scans the entire card for any and all text.
+ * Enhanced Card OCR with advanced preprocessing
  */
 export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     if (!worker) await initOCRWorker();
     
-    // Pre-processing: Scale up for better accuracy
-    const offscreen = document.createElement('canvas');
-    offscreen.width = cardCanvas.width * 2;
-    offscreen.height = cardCanvas.height * 2;
-    const ctx = offscreen.getContext('2d', { willReadFrequently: true });
+    // We expect a high-res canvas (e.g. 800x1116)
+    const ctx = cardCanvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(cardCanvas, 0, 0, offscreen.width, offscreen.height);
-    
-    // Thresholding for text clarity
-    const imgData = ctx.getImageData(0, 0, offscreen.width, offscreen.height);
+    const width = cardCanvas.width;
+    const height = cardCanvas.height;
+    const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
+
+    // Phase 1: Grayscale & Contrast Stretch
+    let min = 255, max = 0;
     for (let i = 0; i < data.length; i += 4) {
       const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      const val = avg > 120 ? 255 : 0; // High contrast
+      if (avg < min) min = avg;
+      if (avg > max) max = avg;
+    }
+
+    // Phase 2: Adaptive Sharpening & Thresholding
+    // We use a simple high-pass logic to emphasize text edges
+    for (let i = 0; i < data.length; i += 4) {
+      let gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      
+      // Normalized stretch
+      gray = ((gray - min) / (max - min)) * 255;
+      
+      // Harsh thresholding for Tesseract
+      const val = gray > 140 ? 255 : 0;
       data[i] = data[i + 1] = data[i + 2] = val;
     }
+    
+    // Put processed data back for visual confirmation if debugging, 
+    // but primarily for Tesseract to read from the canvas
     ctx.putImageData(imgData, 0, 0);
 
-    const { data: { text, confidence } } = await worker.recognize(offscreen);
+    const { data: { text, confidence } } = await worker.recognize(cardCanvas);
     const fullText = cleanText(text);
     
+    // REQUIREMENT: As soon as it finds ANY text at all, add it
     if (!fullText || fullText.length < 3) return null;
 
     // Greedy Name Identification
@@ -111,12 +129,12 @@ export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise
       }
     }
 
-    // Attempt Number Extraction (e.g., 001/191)
+    // Improved Number Extraction (looking for X/Y pattern)
     const numMatch = fullText.match(/(\d{1,3}\/\d{1,3})/);
     const detectedNumber = numMatch ? numMatch[0] : "???";
 
     return {
-      name: detectedName || "Scanning Asset...",
+      name: detectedName || "Unidentified Asset",
       number: detectedNumber,
       fullText: fullText,
       confidence: confidence

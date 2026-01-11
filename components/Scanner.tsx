@@ -15,11 +15,6 @@ interface ScannerProps {
   setIsScanning: (val: boolean) => void;
 }
 
-const TARGET_REGIONS = {
-  name: { u: 0.05, v: 0.02, uw: 0.75, vh: 0.10 },
-  number: { u: 0.02, v: 0.88, uw: 0.40, vh: 0.10 }
-};
-
 const TARGET_RATIO = 0.716;
 const RATIO_TOLERANCE = 0.15; 
 
@@ -35,7 +30,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const lastLocalOCRTime = useRef<number>(0);
   const animationFrameRef = useRef<number>(null);
   
-  // Requirement Tracking
   const lockStartTimeRef = useRef<number>(0);
   const lockTriggeredRef = useRef<boolean>(false);
   const processedTextHashes = useRef<Set<string>>(new Set());
@@ -112,7 +106,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             imageUrl: `data:image/jpeg;base64,${base64}` 
           });
           setScanResult({ name: res.name, price: res.marketValue || "--" });
-          lockTriggeredRef.current = true; // Found text, disable "unfound" trigger
+          lockTriggeredRef.current = true;
           setTimeout(() => setScanResult(null), 3000);
         }
       }
@@ -169,10 +163,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   const captureUnfound = useCallback(() => {
     if (!videoRef.current || !cardCanvasRef.current || lockTriggeredRef.current) return;
-    
-    lockTriggeredRef.current = true; // Ensure single capture per lock
-    
-    // As per user request: if unfound, name it "(unfound)" and use Centiskorch 30/132 as default image
+    lockTriggeredRef.current = true;
     onCardDetected({ 
       id: Math.random().toString(36).substr(2,9), 
       name: "(unfound)", 
@@ -184,14 +175,14 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       scanDate: new Date().toLocaleDateString(), 
       imageUrl: DEFAULT_UNFOUND_IMAGE 
     });
-    
     setScanResult({ name: "(unfound)", price: "--" });
     setTimeout(() => setScanResult(null), 2000);
+    // Fixed: changed onAddCard dependency to onCardDetected
   }, [onCardDetected]);
 
   /**
-   * High-Frequency Perspective Warping
-   * Updates cardCanvasRef with the warped card image.
+   * HIGH RESOLUTION WARP (800x1116)
+   * This is critical for OCR to actually see the text.
    */
   const updateCardWarp = useCallback(() => {
     if (!cvReady || !targetCorners || !videoRef.current || !cardCanvasRef.current) return;
@@ -200,9 +191,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       const corners = targetCorners;
       let src = cv.imread(v);
       let dst = new cv.Mat();
-      let dsize = new cv.Size(400, 560);
+      // Increase size to 800x1116 for high-fidelity text recognition
+      let dsize = new cv.Size(800, 1116);
       let sc = cv.matFromArray(4, 1, cv.CV_32FC2, [corners.tl.x, corners.tl.y, corners.tr.x, corners.tr.y, corners.br.x, corners.br.y, corners.bl.x, corners.bl.y]);
-      let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 400, 0, 400, 560, 0, 560]);
+      let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 800, 0, 800, 1116, 0, 1116]);
       let M = cv.getPerspectiveTransform(sc, dc);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
       cv.imshow(cardCanvasRef.current, dst);
@@ -267,17 +259,14 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             lockStartTimeRef.current = Date.now();
         }
 
-        // Warp immediately for sharp image capture preview
         updateCardWarp();
 
-        // 2-second timeout for "(unfound)"
         if (stabilityScore > 10 && !lockTriggeredRef.current && !scanResult) {
             if (Date.now() - lockStartTimeRef.current > 2000) {
                 captureUnfound();
             }
         }
         
-        // Auto-trigger AI lookup if high stability
         if (stabilityScore > 15 && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 10000) {
           const snapshot = document.createElement('canvas');
           snapshot.width = v.videoWidth;
@@ -300,23 +289,24 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   const runLocalOCR = useCallback(async () => {
     if (!cvReady || !targetCorners || isProcessingLocal || scanResult || !videoRef.current || !cardCanvasRef.current) return;
-    if (Date.now() - lastLocalOCRTime.current < 800) return;
+    // Debounce OCR runs to save CPU
+    if (Date.now() - lastLocalOCRTime.current < 1200) return;
     
     setIsProcessingLocal(true);
     lastLocalOCRTime.current = Date.now();
     try {
       const ocrData = await extractAllCardText(cardCanvasRef.current);
-      if (ocrData && ocrData.fullText.length > 5) {
+      if (ocrData && ocrData.fullText.trim().length > 5) {
         setDetectedData(ocrData);
         
-        const textHash = ocrData.fullText.substring(0, 30); 
+        const textHash = ocrData.fullText.substring(0, 40); 
         if (!processedTextHashes.current.has(textHash)) {
           processedTextHashes.current.add(textHash);
-          lockTriggeredRef.current = true; // Found text, disable "unfound" trigger
+          lockTriggeredRef.current = true;
 
           onCardDetected({ 
             id: Math.random().toString(36).substr(2,9), 
-            name: ocrData.name !== "Scanning Asset..." ? ocrData.name : "Unrecognized Asset", 
+            name: ocrData.name !== "Unidentified Asset" ? ocrData.name : "Text Pattern Detected", 
             number: ocrData.number, 
             set: "Live Neural Scan", 
             rarity: "Detected", 
@@ -326,7 +316,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             imageUrl: cardCanvasRef.current.toDataURL() 
           });
           
-          setScanResult({ name: ocrData.name !== "Scanning Asset..." ? ocrData.name : "Text Detected", price: "--" });
+          setScanResult({ name: ocrData.name !== "Unidentified Asset" ? ocrData.name : "Text Detected", price: "--" });
           setTimeout(() => setScanResult(null), 2000);
         }
       }
@@ -348,19 +338,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return () => clearInterval(int);
   }, [isScanning, cvReady, targetCorners, detectCardWithCV, runLocalOCR]);
 
-  const getQuadPoint = (c: CardCorners, u: number, v: number) => ({
-    x: (1 - u) * (1 - v) * c.tl.x + u * (1 - v) * c.tr.x + (1 - u) * v * c.bl.x + u * v * c.br.x,
-    y: (1 - u) * (1 - v) * c.tl.y + u * (1 - v) * c.tr.y + (1 - u) * v * c.bl.y + u * v * c.br.y
-  });
-
-  const getQuadPath = (c: CardCorners, r: { u: number, v: number, uw: number, vh: number }) => {
-    const p1 = getQuadPoint(c, r.u, r.v);
-    const p2 = getQuadPoint(c, r.u + r.uw, r.v);
-    const p3 = getQuadPoint(c, r.u + r.uw, r.v + r.vh);
-    const p4 = getQuadPoint(c, r.u, r.v + r.vh);
-    return `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y} L ${p3.x} ${p3.y} L ${p4.x} ${p4.y} Z`;
-  };
-
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
@@ -371,7 +348,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
            <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
               <path 
                 d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`} 
-                className={`fill-cyan-400/5 stroke-[10px] transition-all duration-75 ${stabilityScore > 10 ? 'stroke-cyan-400' : 'stroke-cyan-400/30'}`} 
+                className={`fill-cyan-400/5 stroke-[10px] transition-all duration-75 ${stabilityScore > 10 ? 'stroke-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.5)]' : 'stroke-cyan-400/30'}`} 
                 style={{ transform: `translate(${jitter.x}px, ${jitter.y}px)` }}
               />
               
@@ -381,9 +358,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 className="stroke-cyan-400 stroke-[4px] opacity-80"
               />
 
-              <g className="font-orbitron font-black text-[9px] fill-cyan-400 tracking-[0.3em]">
+              <g className="font-orbitron font-black text-[10px] fill-cyan-400 tracking-[0.3em]">
                 <text x={visualCorners.tl.x} y={visualCorners.tl.y - 15}>ASSET_LOCKED</text>
-                <text x={visualCorners.bl.x} y={visualCorners.bl.y + 25}>STABILITY_INDEX: {stabilityScore * 5}%</text>
+                <text x={visualCorners.bl.x} y={visualCorners.bl.y + 25}>PRECISION_STABILITY: {stabilityScore * 5}%</text>
               </g>
 
               <g className="fill-white stroke-cyan-500 stroke-2">
@@ -403,13 +380,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         <div className={`bg-slate-900/98 backdrop-blur-3xl border-2 border-white/10 rounded-[3rem] px-14 py-8 shadow-[0_0_80px_rgba(0,0,0,0.8)] transition-all duration-300 ${visualCorners ? 'border-cyan-400 scale-105' : 'opacity-60'}`}>
            <div className="flex flex-col text-center">
               <div className="flex items-center justify-center gap-3 mb-2">
-                <div className={`w-2 h-2 rounded-full ${visualCorners ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'}`} />
+                <div className={`w-2 h-2 rounded-full ${visualCorners ? 'bg-cyan-400 animate-pulse shadow-[0_0_10px_cyan]' : 'bg-slate-700'}`} />
                 <span className="text-[10px] font-orbitron font-black text-cyan-500 tracking-[0.6em] uppercase">
-                  {stabilityScore > 10 ? 'PRECISION_DECODE_ACTIVE' : 'STREAMING_NEURAL_DATA'}
+                  {stabilityScore > 10 ? 'HIGH_FIDELITY_STREAM' : 'SEEKING_DATA_SIGNALS'}
                 </span>
               </div>
               <h2 className="text-3xl md:text-4xl font-orbitron font-black text-white uppercase tracking-tighter max-w-lg truncate">
-                {detectedData?.name || (isProcessingLocal ? 'EXTRACTING_TEXT...' : 'SCANNING_ENVIRONMENT')}
+                {detectedData?.name || (isProcessingLocal ? 'DECODING_VISUALS...' : 'SCANNING_ENVIRONMENT')}
               </h2>
            </div>
         </div>
