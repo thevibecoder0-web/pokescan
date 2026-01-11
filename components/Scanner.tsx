@@ -82,7 +82,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
         }
         setIsProcessingLocal(false);
-      }, 400); // Slightly slower interval for dual-zone processing
+      }, 400); 
     }
     return () => clearInterval(interval);
   }, [isScanning, loading, isProcessingLocal]);
@@ -115,10 +115,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         setTimeout(() => setScanResult(null), 2500);
         setLoading(false);
       } else {
-        // AI Sync: Find Official Image Online
+        // AI Sync: Find Official Image Online using NAME and NUMBER
         try {
-          const query = `${name} ${number || ''} pokemon card tcgplayer market price and official artwork`;
+          // Explicitly ask Gemini to find high-resolution official artwork for the specific name and number
+          const query = `${name} #${number || ''} pokemon card official high-res artwork URL and current tcgplayer market price`;
           const aiData = await manualCardLookup(query);
+          
           if (aiData) {
             const result: PokemonCard = {
               id: Math.random().toString(36).substr(2, 9),
@@ -129,7 +131,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             setScanResult({ name: result.name, price: result.marketValue || "N/A" });
             onCardDetected(result);
           } else {
-            // Fallback if AI fails
+            // Fallback if AI fails to find specific card
             onCardDetected({
               id: Math.random().toString(36).substr(2, 9),
               name: name,
@@ -142,14 +144,14 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             });
           }
         } catch (e) {
-          setError("SYNC_ERROR: Card found, but metadata retrieval failed.");
+          setError("SYNC_ERROR: Metadata retrieval failed.");
         } finally {
           setTimeout(() => setScanResult(null), 2500);
           setLoading(false);
         }
       }
     } else {
-      setError("NO_TARGET_DETECTED: Align name and number in scan zone.");
+      setError("NO_TARGET_DETECTED: Align name (Top) and number (Bottom Left).");
       setTimeout(() => setError(null), 3000);
     }
   }, [loading, onCardDetected, detectedData]);
@@ -187,21 +189,24 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       </div>
 
       <div className="absolute inset-0 z-10 pointer-events-none">
-        {/* Top Scan Bar */}
+        {/* Top Scan Bar (Name) */}
         <div className="absolute top-0 left-0 w-full h-[18%] border-b border-cyan-500/30 bg-cyan-500/5 backdrop-blur-[2px]">
             <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full border bg-cyan-900/60 border-cyan-400/30">
                 <span className="text-[8px] font-orbitron font-black tracking-[0.4em] uppercase text-cyan-400">
-                  Dual_Sensor_Active
+                  Header_Scanner: Name
                 </span>
             </div>
         </div>
 
-        {/* Bottom Scan Bar */}
-        <div className="absolute bottom-0 left-0 w-full h-[18%] border-t border-purple-500/30 bg-purple-500/5 backdrop-blur-[2px]">
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full border bg-purple-900/60 border-purple-400/30">
-                <span className="text-[8px] font-orbitron font-black tracking-[0.4em] uppercase text-purple-400">
-                  Number_Index_Ready
+        {/* Bottom-Left Scan Region (Number) */}
+        <div className="absolute bottom-0 left-0 w-[40%] h-[20%] border-t border-r border-purple-500/40 bg-purple-500/10 backdrop-blur-[2px] rounded-tr-[3rem]">
+            <div className="absolute top-2 left-4 px-3 py-1 rounded-full border bg-purple-900/80 border-purple-400/50">
+                <span className="text-[8px] font-orbitron font-black tracking-[0.2em] uppercase text-purple-300">
+                  #{detectedData?.number || 'INDEX'}
                 </span>
+            </div>
+            <div className="absolute bottom-4 left-4 text-[7px] font-orbitron font-bold text-purple-400 uppercase tracking-widest">
+              Numb_Index: Bottom_Left
             </div>
         </div>
 
@@ -211,7 +216,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             className="absolute border-2 border-cyan-400 rounded shadow-[0_0_20px_rgba(34,211,238,1)] transition-all duration-150 ease-out"
           >
             <div className="absolute -top-6 left-0 bg-cyan-400 text-black px-2 py-0.5 text-[9px] font-orbitron font-black uppercase tracking-tighter whitespace-nowrap">
-              LOCK: {detectedData.name} {detectedData.number && `[#${detectedData.number}]`}
+              LOCK: {detectedData.name}
             </div>
           </div>
         )}
@@ -227,21 +232,23 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           <div className="absolute top-[25%] -translate-y-full w-full max-w-sm px-6 transition-transform duration-500">
             <div className="bg-slate-950/90 backdrop-blur-3xl border border-white/10 px-8 py-6 rounded-[3rem] shadow-[0_30px_60px_rgba(0,0,0,0.7)] text-center">
                 <span className="text-xl sm:text-3xl font-orbitron font-black text-white tracking-tighter block truncate">
-                    {loading ? "SEARCHING..." : (detectedData?.name || "ALIGN CARD")}
+                    {loading ? "FETCHING_ART..." : (detectedData?.name || "ALIGN CARD")}
                 </span>
                 
                 <div className="mt-3 flex items-center justify-center gap-2">
                   <div className={`w-2 h-2 rounded-full ${detectedData ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'}`}></div>
                   <span className={`text-[8px] font-orbitron font-black tracking-[0.5em] uppercase transition-colors ${detectedData ? 'text-cyan-400' : 'text-slate-600'}`}>
-                    {loading ? 'ONLINE_SYNC' : detectedData ? `TARGET_LOCK ${detectedData.number ? 'INDEX_OK' : ''}` : 'SCANNING_REGIONS'}
+                    {loading ? 'AI_ART_RETRIEVAL' : detectedData ? `TARGET_LOCK: ${detectedData.number || 'NAME_ONLY'}` : 'DUAL_ZONE_READY'}
                   </span>
                 </div>
             </div>
           </div>
 
           <div className="absolute bottom-32 left-1/2 -translate-x-1/2 flex flex-col items-center gap-5 pointer-events-auto">
-            <p className="text-white text-[9px] font-orbitron uppercase tracking-widest text-center bg-slate-950/50 backdrop-blur-md px-6 py-3 rounded-full border border-white/5">
-                {detectedData ? 'Tap to sync official image and details' : 'Position card name in top bar and number in bottom bar'}
+            <p className="text-white text-[9px] font-orbitron uppercase tracking-widest text-center bg-slate-950/70 backdrop-blur-md px-6 py-4 rounded-3xl border border-white/10 max-w-[280px]">
+                {detectedData 
+                  ? 'Tap to find official card artwork and sync details' 
+                  : 'Align Name in top bar and Number in bottom-left corner'}
             </p>
           </div>
 

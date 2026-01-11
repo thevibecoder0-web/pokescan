@@ -42,7 +42,7 @@ const initWorker = async () => {
 /**
  * Optimized Hybrid OCR for Pokemon Cards
  * 1. Focuses on top 18% (Name)
- * 2. Focuses on bottom 20% (Card Number)
+ * 2. Focuses on bottom-left 35% width, 15% height (Card Number)
  */
 export const extractNameLocally = async (sourceCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
@@ -53,27 +53,29 @@ export const extractNameLocally = async (sourceCanvas: HTMLCanvasElement): Promi
     if (!ctx) return null;
 
     const cropHeightName = Math.floor(sourceCanvas.height * 0.18);
-    const cropHeightNumber = Math.floor(sourceCanvas.height * 0.20);
-    const cropWidth = sourceCanvas.width;
+    const cropHeightNumber = Math.floor(sourceCanvas.height * 0.15);
+    const cropWidthName = sourceCanvas.width;
+    const cropWidthNumber = Math.floor(sourceCanvas.width * 0.35); // Focus on Bottom Left
     
-    // We combine both zones into one "stripline" to minimize recognition calls
-    nameplateCanvas.width = cropWidth;
+    nameplateCanvas.width = Math.max(cropWidthName, cropWidthNumber);
     nameplateCanvas.height = cropHeightName + cropHeightNumber;
 
-    ctx.filter = 'grayscale(1) contrast(1.6)';
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, nameplateCanvas.width, nameplateCanvas.height);
+    ctx.filter = 'grayscale(1) contrast(1.8) brightness(1.1)';
     
-    // Draw Name Zone (Top)
+    // Draw Name Zone (Top Full Width)
     ctx.drawImage(
       sourceCanvas, 
       0, 0, sourceCanvas.width, cropHeightName,
-      0, 0, cropWidth, cropHeightName
+      0, 0, cropWidthName, cropHeightName
     );
 
-    // Draw Number Zone (Bottom)
+    // Draw Number Zone (Bottom Left Corner)
     ctx.drawImage(
       sourceCanvas,
-      0, sourceCanvas.height - cropHeightNumber, sourceCanvas.width, cropHeightNumber,
-      0, cropHeightName, cropWidth, cropHeightNumber
+      0, sourceCanvas.height - cropHeightNumber, cropWidthNumber, cropHeightNumber,
+      0, cropHeightName, cropWidthNumber, cropHeightNumber
     );
 
     const { data } = await worker.recognize(nameplateCanvas);
@@ -85,9 +87,10 @@ export const extractNameLocally = async (sourceCanvas: HTMLCanvasElement): Promi
     for (const word of data.words) {
       const text = word.text.trim();
       
-      // Look for Card Number Patterns (e.g., 123/191 or 036)
+      // Improved Card Number Regex (captures formats like 123/191, 001/020, or even 123 in isolation)
       if (!detectedNumber) {
-        const numMatch = text.match(/(\d{1,3}\/\d{1,3})|(\d{3})/);
+        // Regex for numbers like "123/191" or "001" or "SV036"
+        const numMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})|(\b\d{3}\b)/i);
         if (numMatch) {
           detectedNumber = numMatch[0];
         }
