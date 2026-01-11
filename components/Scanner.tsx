@@ -84,8 +84,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   }, []);
 
   /**
-   * COMPUTER VISION: Target Acquisition
-   * Frequency: Constant feed monitoring
+   * COMPUTER VISION: High-Frequency Vertex Refit
+   * Re-implemented ratio check for "Perfect Fit" validation.
+   * Target TCG ratio is ~0.71 (63mm / 88mm).
    */
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return; 
@@ -95,8 +96,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) return;
 
-    canvas.width = video.videoWidth / 2;
-    canvas.height = video.videoHeight / 2;
+    // Use a slightly larger buffer for better edge detection at high speed
+    canvas.width = video.videoWidth / 1.5;
+    canvas.height = video.videoHeight / 1.5;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     try {
@@ -106,7 +108,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
       cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-      cv.Canny(gray, dst, 40, 120);
+      cv.Canny(gray, dst, 50, 150);
       
       let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
       cv.dilate(dst, dst, kernel);
@@ -122,7 +124,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
         
-        if (area > (canvas.width * canvas.height * 0.1)) {
+        if (area > (canvas.width * canvas.height * 0.08)) {
           let approx = new cv.Mat();
           let peri = cv.arcLength(cnt, true);
           cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
@@ -131,8 +133,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             let pts: Point[] = [];
             for (let j = 0; j < 4; j++) {
               pts.push({ 
-                x: approx.data32S[j * 2] * 2, 
-                y: approx.data32S[j * 2 + 1] * 2 
+                x: approx.data32S[j * 2] * 1.5, 
+                y: approx.data32S[j * 2 + 1] * 1.5 
               });
             }
 
@@ -146,12 +148,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               bl: sortedByDiff[3]
             };
 
+            // REFIT: Ratio lock (Pokemon cards are 63:88, so 0.71)
             const widthTop = Math.hypot(potentialCorners.tr.x - potentialCorners.tl.x, potentialCorners.tr.y - potentialCorners.tl.y);
             const heightLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
             const ratio = widthTop / heightLeft;
 
-            // Strict Card Ratio Check (Standard cards are 0.71)
-            if (ratio > 0.60 && ratio < 0.90) {
+            // Allow for perspective tilt (0.65 to 0.85 range)
+            if (ratio > 0.62 && ratio < 0.88) {
               if (area > maxArea) {
                 maxArea = area;
                 foundCorners = potentialCorners;
@@ -185,8 +188,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       id: Math.random().toString(36).substring(7),
       name: data.name,
       number: data.number,
-      set: "Verified Scan",
-      rarity: "Detected Asset",
+      set: "Verified Asset",
+      rarity: "Detected",
       type: "Unknown",
       marketValue: "$--.--",
       imageUrl: `https://placehold.co/400x560/1e293b/white?text=${data.name}+${data.number}`,
@@ -200,21 +203,20 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       setScanResult(null);
       setCorners(null);
       setDetectedData(null);
-    }, 1800);
+    }, 1500);
   };
 
   /**
-   * STABLE SCAN LOOP: 5Hz (200ms)
-   * High accuracy mode: Fewer frames, more processing time.
+   * HYPER SCAN LOOP: 20Hz (50ms)
    */
   useEffect(() => {
     let interval: number;
     if (isScanning && cvReady && !scanResult) {
       interval = window.setInterval(async () => {
-        // Step 1: Detect and fit card
+        // Step 1: Refit card size (CV)
         detectCardWithCV();
 
-        // Step 2: If a stable fit is found, attempt high-fidelity extraction
+        // Step 2: Extract info (OCR) - only if locked and not already busy
         if (corners && !isProcessing) {
           setIsProcessing(true);
           const video = videoRef.current!;
@@ -227,8 +229,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const minY = Math.min(corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y);
             const maxY = Math.max(corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y);
 
-            // Precision crop with slight over-sampling for OCR clarity
-            const padding = 25; 
+            const padding = 30; // Extra padding for better OCR text context
             const cropX = Math.max(0, minX - padding);
             const cropY = Math.max(0, minY - padding);
             const cropW = Math.min(video.videoWidth - cropX, (maxX - minX) + (padding * 2));
@@ -246,7 +247,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
           setIsProcessing(false);
         }
-      }, 200); // 5 times per second for maximum OCR stability
+      }, 50); // 20 times per second
     }
     return () => clearInterval(interval);
   }, [isScanning, cvReady, corners, isProcessing, scanResult]);
@@ -255,34 +256,29 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-90" />
       
-      {/* HUD: High-Accuracy Perspective Mesh */}
+      {/* HUD: Precision Perspective Mesh */}
       {corners && viewBox.w > 0 && !scanResult && (
         <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
              <path 
                 d={`M ${corners.tl.x} ${corners.tl.y} L ${corners.tr.x} ${corners.tr.y} L ${corners.br.x} ${corners.br.y} L ${corners.bl.x} ${corners.bl.y} Z`}
-                className={`fill-transparent stroke-[4px] transition-all duration-200 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,1)]' : 'stroke-white/70 animate-pulse'}`}
+                className={`fill-transparent stroke-[4px] transition-all duration-75 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,1)]' : 'stroke-white/80'}`}
              />
              
              {[corners.tl, corners.tr, corners.bl, corners.br].map((p, i) => (
-                <circle key={i} cx={p.x} cy={p.y} r="12" className="fill-cyan-400 stroke-black stroke-2" />
+                <circle key={i} cx={p.x} cy={p.y} r="10" className="fill-cyan-400 stroke-black stroke-2" />
              ))}
           </svg>
 
           <div 
             style={{ left: `${(corners.tl.x / viewBox.w) * 100}%`, top: `${(corners.tl.y / viewBox.h) * 100}%` }}
-            className="absolute -translate-y-28 translate-x-4 flex flex-col gap-2 scale-95 sm:scale-100"
+            className="absolute -translate-y-24 translate-x-4 flex flex-col gap-2 scale-90 sm:scale-100"
           >
              <div className="flex gap-2">
-                <span className={`px-5 py-2.5 text-[13px] font-orbitron font-black uppercase rounded-xl shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
-                  {detectedData?.name || 'ANALYZING_SURFACE...'}
+                <span className={`px-4 py-2 text-[12px] font-orbitron font-black uppercase rounded-lg shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
+                  {detectedData?.name || 'HYPER_SCANNING...'}
                 </span>
              </div>
-             {detectedData?.number && (
-               <div className="bg-white/10 backdrop-blur-md border border-white/20 px-4 py-1.5 rounded-lg inline-block self-start">
-                  <span className="text-[10px] font-orbitron font-bold text-white uppercase tracking-widest">REF: #{detectedData.number}</span>
-               </div>
-             )}
           </div>
         </div>
       )}
@@ -290,14 +286,14 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       {/* Immediate Success Notification */}
       <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-50">
         {scanResult && (
-           <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-300 text-center relative overflow-hidden">
+           <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
               <div className="w-20 h-20 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-[0_0_40px_rgba(34,211,238,0.5)]">
                   <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
               </div>
               <div className="relative z-10">
                 <div className="text-4xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter drop-shadow-2xl">{scanResult.name}</div>
                 <div className="bg-cyan-500/20 text-cyan-400 py-2 px-8 rounded-full border border-cyan-500/30 inline-block">
-                    <span className="text-[10px] font-orbitron font-black uppercase tracking-[0.4em]">VAULT_SECURED</span>
+                    <span className="text-[10px] font-orbitron font-black uppercase tracking-[0.4em]">VAULT_SUCCESS</span>
                 </div>
               </div>
            </div>
@@ -306,22 +302,22 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       {/* Telemetry Dashboard */}
       <div className="absolute bottom-10 left-0 w-full px-10 flex justify-between items-end">
-        <div className="bg-slate-950/90 backdrop-blur-3xl p-6 rounded-[2.5rem] border border-white/10 shadow-3xl min-w-[300px]">
+        <div className="bg-slate-950/90 backdrop-blur-3xl p-6 rounded-[2.5rem] border border-white/10 shadow-3xl min-w-[280px]">
            <div className="flex items-center gap-4 mb-4">
-             <div className="w-3 h-3 rounded-full bg-cyan-500 animate-pulse"></div>
+             <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
              <span className="text-[11px] font-orbitron font-black text-white uppercase tracking-widest">
-                5Hz_ACCURACY_SCAN
+                20Hz_PRECISION_REFIT
              </span>
            </div>
            <div className="space-y-1">
              <div className="flex justify-between items-center">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Frame Latency:</span>
-                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">200ms_SYNC_STABLE</span>
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Contour Frequency:</span>
+                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">50ms_SYNC_OK</span>
              </div>
              <div className="flex justify-between items-center">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">OCR Core:</span>
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Target Mesh:</span>
                 <span className={`text-[8px] font-black uppercase tracking-tight ${corners ? 'text-green-400' : 'text-slate-600'}`}>
-                   {corners ? 'TARGET_IN_SIGHT' : 'SEEKING_LOCK'}
+                   {corners ? 'RATIO_LOCK_0.71' : 'SEARCHING_AREA'}
                 </span>
              </div>
            </div>
