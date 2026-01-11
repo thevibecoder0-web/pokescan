@@ -2,7 +2,7 @@
 import { createWorker } from 'tesseract.js';
 
 let worker: any = null;
-let isInitializing = false;
+let initPromise: Promise<void> | null = null;
 
 export interface OCRResult {
   name: string;
@@ -32,71 +32,66 @@ const getLevenshteinDistance = (a: string, b: string): number => {
 };
 
 const POKEMON_SPECIES = [
-  "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise", 
-  "Pikachu", "Raichu", "Eevee", "Vaporeon", "Jolteon", "Flareon", "Mewtwo", "Mew", "Lugia", "Ho-Oh", 
-  "Rayquaza", "Kyogre", "Groudon", "Lucario", "Greninja", "Mimikyu", "Eternatus", "Zacian", "Zamazenta", 
-  "Koraidon", "Miraidon", "Terapagos", "Milotic", "Gengar", "Dragonite", "Arcanine", "Lapras", "Snorlax", 
-  "Ditto", "Gardevoir", "Sylveon", "Umbreon", "Espeon", "Tyranitar", "Scizor", "Alakazam", "Machamp",
-  "Arceus", "Dialga", "Palkia", "Giratina", "Darkrai", "Cresselia", "Heatran", "Regigigas", "Manaphy",
-  "Zeraora", "Marshadow", "Meltan", "Melmetal", "Garchomp", "Salamence", "Metagross", "Hydreigon", "Goodra",
-  "Kommo-o", "Dragapult", "Baxcalibur", "Roaring Moon", "Iron Valiant", "Iron Hands", "Flutter Mane",
-  "Centiskorch", "Orbeetle", "Drednaw", "Coalossal", "Appletun", "Flapple", "Toxtricity", "Sandaconda", "Grimmsnarl"
+  "Pikachu", "Charizard", "Blastoise", "Venusaur", "Mewtwo", "Mew", "Eevee", "Lugia", "Rayquaza", 
+  "Gengar", "Dragonite", "Arcanine", "Lucario", "Greninja", "Mimikyu", "Milotic", "Squirtle", 
+  "Bulbasaur", "Charmander", "Snorlax", "Lapras", "Ditto", "Gardevoir", "Sylveon", "Umbreon", 
+  "Espeon", "Tyranitar", "Alakazam", "Machamp", "Ho-Oh", "Kyogre", "Groudon", "Dialga", "Palkia",
+  "Giratina", "Arceus", "Zacian", "Zamazenta", "Koraidon", "Miraidon", "Terapagos", "Exeggcute",
+  "Exeggutor", "Hoothoot", "Noctowl", "Shroomish", "Breloom", "Budew", "Roselia", "Roserade",
+  "Cottonee", "Whimsicott", "Petilil", "Lilligant", "Maractus", "Deerling", "Sawsbuck", "Grubbin",
+  "Charjabug", "Vikavolt", "Dwebble", "Crustle", "Morelull", "Shiinotic", "Zarude", "Scovillain",
+  "Ponyta", "Rapidash", "Moltres", "Victini", "Larvesta", "Volcarona", "Charcadet", "Ceruledge"
 ];
 
 export const initOCRWorker = async () => {
-  if (worker || isInitializing) return;
-  isInitializing = true;
-  try {
-    worker = await createWorker('eng');
-    await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -!',
-      tessedit_pageseg_mode: '3', 
-      tessjs_create_hocr: '0',
-      tessjs_create_tsv: '0',
-    });
-  } catch (err) {
-    console.error("Worker Initialization Failed", err);
-  } finally {
-    isInitializing = false;
-  }
+  if (worker) return;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    try {
+      worker = await createWorker('eng');
+      await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -!',
+        tessedit_pageseg_mode: '3', 
+      });
+    } catch (err) {
+      console.error("OCR Worker Init Failed", err);
+      initPromise = null; // Reset promise so we can try again
+      throw err;
+    }
+  })();
+
+  return initPromise;
 };
 
 const cleanText = (text: string) => {
   return text.trim().replace(/[\n\r]/g, ' ').replace(/\s+/g, ' ');
 };
 
-export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
+export const extractCardTextLocally = async (imageCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
-    if (!worker) await initOCRWorker();
+    // Ensure initialization is complete and worker is assigned
+    await initOCRWorker();
     
-    const ctx = cardCanvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return null;
-    
-    const width = cardCanvas.width;
-    const height = cardCanvas.height;
-    const imgData = ctx.getImageData(0, 0, width, height);
-    const data = imgData.data;
-
-    // Softened preprocessing: just grayscale and simple contrast
-    for (let i = 0; i < data.length; i += 4) {
-      const gray = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
-      data[i] = data[i+1] = data[i+2] = gray;
+    if (!worker) {
+        throw new Error("OCR worker is not available after initialization.");
     }
-    ctx.putImageData(imgData, 0, 0);
 
-    const { data: { text, confidence } } = await worker.recognize(cardCanvas);
+    const { data: { text, confidence } } = await worker.recognize(imageCanvas);
     const fullText = cleanText(text);
     
-    if (!fullText || fullText.length < 4) return null;
+    if (!fullText || fullText.length < 3) return null;
 
     let detectedName = "";
     const words = fullText.split(' ');
+    
+    // Look for Pokemon names
     for (const word of words) {
       const cleanWord = word.replace(/[^a-zA-Z]/g, '');
       if (cleanWord.length < 3) continue;
       
       const match = POKEMON_SPECIES.find(s => 
-        s.toLowerCase() === cleanWord.toLowerCase() || 
+        cleanWord.toLowerCase().includes(s.toLowerCase()) || 
         getLevenshteinDistance(cleanWord.toLowerCase(), s.toLowerCase()) <= 1
       );
       
@@ -106,17 +101,18 @@ export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise
       }
     }
 
-    const numMatch = fullText.match(/(\d{1,3}\/\d{1,3})/);
-    const detectedNumber = numMatch ? numMatch[0] : "???";
+    // Look for numbers like 036/191 or 123/191
+    const numMatch = fullText.match(/(\d{1,3})\/(\d{1,3})/);
+    const detectedNumber = numMatch ? numMatch[0] : "";
 
     return {
-      name: detectedName || "Unidentified Asset",
+      name: detectedName,
       number: detectedNumber,
       fullText: fullText,
       confidence: confidence
     };
   } catch (error) {
-    console.error("Global OCR Error", error);
+    console.error("Local OCR Error", error);
     return null;
   }
 };

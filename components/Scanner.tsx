@@ -1,6 +1,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { identifyPokemonCard } from '../services/geminiService';
+import { extractCardTextLocally, initOCRWorker } from '../services/ocrService';
+import { matchToLocalDatabase } from '../services/localDatabaseService';
 import { PokemonCard } from '../types';
 
 interface ScannerProps {
@@ -14,8 +15,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, onScanError, isProces
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const lastCaptureTime = useRef<number>(0);
-  const quotaDelayRef = useRef<number>(0);
+  const [lastDetected, setLastDetected] = useState<string>("");
+  const [ocrStatus, setOcrStatus] = useState<string>("Initializing Local Scanner...");
+  const processingRef = useRef(false);
 
   useEffect(() => {
     const startCamera = async () => {
@@ -25,72 +27,70 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, onScanError, isProces
         });
         setStream(ms);
         if (videoRef.current) videoRef.current.srcObject = ms;
+        
+        await initOCRWorker();
+        setOcrStatus("Local OCR Engine Ready");
       } catch (e) {
         console.error("Camera access denied");
+        setOcrStatus("Camera Access Required");
       }
     };
     startCamera();
     return () => stream?.getTracks().forEach(t => t.stop());
   }, []);
 
-  const captureAndAnalyze = useCallback(async () => {
-    if (isProcessing || !videoRef.current || !canvasRef.current) return;
+  const runLocalDetection = useCallback(async () => {
+    if (processingRef.current || !videoRef.current || !canvasRef.current) return;
     
-    const now = Date.now();
-    // Dynamically adjust interval if we hit quota recently
-    const minInterval = quotaDelayRef.current > now ? 8000 : 3000; 
-    
-    if (now - lastCaptureTime.current < minInterval) return; 
-
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Snapshot
+    // Capture frame
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
     
-    setIsProcessing(true);
-    lastCaptureTime.current = now;
+    processingRef.current = true;
+    setOcrStatus("Processing Local Frame...");
 
     try {
-      const result = await identifyPokemonCard(base64);
-      if (result && result.found) {
-        onCardDetected({
-          name: result.name,
-          set: result.set,
-          number: result.number,
-          rarity: result.rarity,
-          marketPrice: result.marketPrice,
-          imageUrl: result.imageUrl,
-          type: result.type,
-          hp: result.hp,
-          marketValue: result.marketValue,
-          sourceUrl: result.sourceUrl
-        });
+      // 1. Run local OCR (Free, no limits)
+      const ocrResult = await extractCardTextLocally(canvas);
+      
+      if (ocrResult && (ocrResult.name || ocrResult.number)) {
+        setOcrStatus(`Detected: ${ocrResult.name} ${ocrResult.number}`);
+        
+        // 2. Match to Local Database (Free, no limits)
+        const localMatch = matchToLocalDatabase(ocrResult.name, ocrResult.number);
+        
+        if (localMatch && localMatch.name !== lastDetected) {
+          setLastDetected(localMatch.name);
+          onCardDetected({
+            ...localMatch,
+            scanDate: new Date().toLocaleDateString(),
+          });
+          setOcrStatus(`Asset Linked: ${localMatch.name}`);
+        }
+      } else {
+        setOcrStatus("Scanning for Card Data...");
       }
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
-        // Back off for 15 seconds if quota hit
-        quotaDelayRef.current = Date.now() + 15000;
-      }
-      onScanError(e);
+    } catch (e) {
+      console.error("Local scan error", e);
     } finally {
-      setIsProcessing(false);
+      processingRef.current = false;
     }
-  }, [isProcessing, onCardDetected, onScanError, setIsProcessing]);
+  }, [onCardDetected, lastDetected]);
 
   useEffect(() => {
-    const interval = setInterval(captureAndAnalyze, 1000);
+    // Run local OCR every 2 seconds - completely free and unlimited
+    const interval = setInterval(runLocalDetection, 2500);
     return () => clearInterval(interval);
-  }, [captureAndAnalyze]);
+  }, [runLocalDetection]);
 
   return (
     <div className="relative w-full h-full bg-black rounded-[3rem] overflow-hidden border-4 border-slate-800 shadow-2xl">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-90" />
-      <canvas ref={canvasRef} className="hidden" width="1024" height="768" />
+      <canvas ref={canvasRef} className="hidden" width="800" height="600" />
       
       {/* Target Reticle */}
       <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
@@ -104,13 +104,20 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, onScanError, isProces
         </div>
       </div>
 
-      <div className="absolute bottom-10 left-1/2 -translate-x-1/2">
-        <div className="bg-slate-900/80 backdrop-blur-xl px-8 py-3 rounded-full border border-white/10 flex items-center gap-4">
-          <div className={`w-2 h-2 rounded-full ${isProcessing ? 'bg-amber-400 animate-ping' : 'bg-cyan-400 animate-pulse'}`} />
-          <span className="font-orbitron text-[10px] font-bold text-white tracking-[0.3em] uppercase">
-            {isProcessing ? 'Analyzing Neural Data' : 'Neural Scan Active'}
-          </span>
+      <div className="absolute bottom-10 left-1/2 -translate-x-1/2 w-full px-6 flex flex-col items-center gap-4">
+        <div className="bg-slate-950/90 backdrop-blur-xl px-8 py-4 rounded-3xl border border-cyan-500/30 flex items-center gap-4 shadow-2xl max-w-sm w-full">
+          <div className={`w-3 h-3 rounded-full ${processingRef.current ? 'bg-amber-400 animate-ping' : 'bg-green-400 animate-pulse'}`} />
+          <div className="flex-1 overflow-hidden">
+            <p className="text-[8px] font-black text-slate-500 uppercase tracking-[0.4em] mb-1">Local Processing Engine</p>
+            <p className="text-xs font-orbitron font-bold text-white tracking-tighter truncate">
+              {ocrStatus}
+            </p>
+          </div>
         </div>
+        
+        <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest bg-black/40 px-4 py-1 rounded-full backdrop-blur-sm">
+          Unlimited Offline Scanning Active
+        </p>
       </div>
     </div>
   );
