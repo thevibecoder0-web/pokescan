@@ -101,11 +101,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const capabilities = (track as any).getCapabilities?.() || {};
     if (!capabilities.exposureCompensation) return;
 
-    // Sample a grid of pixels to check for glare (luminance > 235)
     const imageData = ctx.getImageData(0, 0, width, height).data;
     let blownOutPixels = 0;
     let totalLuminance = 0;
-    const step = 8; // Performance optimization: sample every 8th pixel
+    const step = 8; 
     
     for (let i = 0; i < imageData.length; i += 4 * step) {
       const r = imageData[i];
@@ -123,8 +122,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     let targetBias = exposureBias;
     const stepSize = 0.5;
 
-    // Logic: If glare is > 5% of the frame, drop exposure.
-    // If average luminance is < 80 (very dark) and glare is low, increase exposure.
     if (glareRatio > 0.05) {
       targetBias = Math.max(capabilities.exposureCompensation.min || -2.0, exposureBias - stepSize);
     } else if (avgLuminance < 80 && glareRatio < 0.01) {
@@ -204,6 +201,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     };
   }, [targetCorners]);
 
+  /**
+   * REFINED COMPUTER VISION PIPELINE:
+   * Optimized for vibrant colors and bright lighting.
+   * Uses Edge Fusion (Canny + Adaptive Threshold) to ensure cards are detected 
+   * even when the background is busy or the colors blend.
+   */
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return; 
     
@@ -216,7 +219,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     canvas.height = video.videoHeight / 2;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Call glare mitigation if torch is active
     if (isTorchOn) {
       adjustExposureForGlare(context, canvas.width, canvas.height);
     }
@@ -224,15 +226,28 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     try {
       let src = cv.imread(canvas);
       let gray = new cv.Mat();
+      let blurred = new cv.Mat();
       let thresh = new cv.Mat();
+      let cannyEdges = new cv.Mat();
       
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.medianBlur(gray, gray, 5); 
       
-      cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
+      // Use Gaussian Blur for better edge preservation than Median in high-vibrancy scenes
+      cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
       
-      let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-      cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, M);
+      // 1. Adaptive Thresholding (Detects local contrasts)
+      cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
+      
+      // 2. Canny Edge Detection (Detects global structures)
+      // Standard TCG border detection ranges
+      cv.Canny(blurred, cannyEdges, 75, 200);
+      
+      // 3. Edge Fusion: Combine both methods
+      cv.bitwise_or(thresh, cannyEdges, thresh);
+      
+      // 4. Stronger Morphology: Bridge gaps in borders caused by vibrant reflections
+      let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+      cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, kernel);
       
       let contours = new cv.MatVector();
       let hierarchy = new cv.Mat();
@@ -245,7 +260,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
         
-        if (area > (canvas.width * canvas.height * 0.06)) {
+        // Dynamic area threshold
+        if (area > (canvas.width * canvas.height * 0.05)) {
           let approx = new cv.Mat();
           let peri = cv.arcLength(cnt, true);
           cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
@@ -273,7 +289,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const hLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
             const ratio = wTop / hLeft;
 
-            if (ratio > 0.55 && ratio < 0.95) {
+            // Widen ratio acceptance for perspective distortions
+            if (ratio > 0.5 && ratio < 1.0) {
               if (area > maxArea) {
                 maxArea = area;
                 foundCorners = potentialCorners;
@@ -294,7 +311,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         }
       }
 
-      src.delete(); gray.delete(); thresh.delete(); M.delete(); contours.delete(); hierarchy.delete();
+      src.delete(); gray.delete(); blurred.delete(); thresh.delete(); cannyEdges.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {
       console.warn("CV Frame Failure");
     }
