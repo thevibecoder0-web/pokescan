@@ -32,7 +32,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const lastLocalOCRTime = useRef<number>(0);
   const animationFrameRef = useRef<number>(null);
   
-  // Track unique hashes of detected text to prevent duplicates
+  // Requirement Tracking
+  const lockStartTimeRef = useRef<number>(0);
+  const lockTriggeredRef = useRef<boolean>(false);
   const processedTextHashes = useRef<Set<string>>(new Set());
 
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -97,7 +99,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     try {
       const res = await identifyPokemonCard(base64);
       if (res && res.name) {
-        // Only add if we haven't identified this specific card name in this session recently
         const hash = `ai_${res.name}_${res.number}`;
         if (!processedTextHashes.current.has(hash)) {
           processedTextHashes.current.add(hash);
@@ -108,6 +109,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             imageUrl: `data:image/jpeg;base64,${base64}` 
           });
           setScanResult({ name: res.name, price: res.marketValue || "--" });
+          lockTriggeredRef.current = true; // Prevents "unfound" trigger
           setTimeout(() => setScanResult(null), 3000);
         }
       }
@@ -162,6 +164,28 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return true;
   };
 
+  const captureUnfound = useCallback(() => {
+    if (!videoRef.current || !cardCanvasRef.current || lockTriggeredRef.current) return;
+    
+    lockTriggeredRef.current = true; // Ensure single capture per lock
+    
+    const v = videoRef.current;
+    onCardDetected({ 
+      id: Math.random().toString(36).substr(2,9), 
+      name: "(unfound)", 
+      number: "???", 
+      set: "Visual Capture", 
+      rarity: "Unknown", 
+      type: "Unknown", 
+      marketValue: "$--.--", 
+      scanDate: new Date().toLocaleDateString(), 
+      imageUrl: cardCanvasRef.current.toDataURL() 
+    });
+    
+    setScanResult({ name: "(unfound)", price: "--" });
+    setTimeout(() => setScanResult(null), 2000);
+  }, [onCardDetected]);
+
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return;
     const v = videoRef.current;
@@ -212,6 +236,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         setTargetCorners(found);
         setStabilityScore(s => Math.min(s + 1, 20));
         
+        if (lockStartTimeRef.current === 0) {
+            lockStartTimeRef.current = Date.now();
+        }
+
+        // 2-second timeout for "(unfound)"
+        if (stabilityScore > 10 && !lockTriggeredRef.current && !scanResult) {
+            if (Date.now() - lockStartTimeRef.current > 2000) {
+                captureUnfound();
+            }
+        }
+        
         // Auto-trigger AI lookup if high stability
         if (stabilityScore > 12 && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 8000) {
           const snapshot = document.createElement('canvas');
@@ -223,19 +258,18 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       } else {
         setTargetCorners(null);
         setStabilityScore(s => Math.max(s - 3, 0));
+        lockStartTimeRef.current = 0;
+        lockTriggeredRef.current = false;
       }
 
       src.delete(); gray.delete(); blurred.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {
       console.warn("CV Frame Error", e);
     }
-  }, [cvReady, isDeepScanning, scanResult, stabilityScore]);
+  }, [cvReady, isDeepScanning, scanResult, stabilityScore, captureUnfound]);
 
   const runLocalOCR = useCallback(async () => {
     if (!cvReady || !targetCorners || isProcessingLocal || scanResult || !videoRef.current || !cardCanvasRef.current) return;
-    
-    // REQUIREMENT: As soon as it finds any text, add it.
-    // We allow OCR runs even with lower stability if geometry is valid.
     if (Date.now() - lastLocalOCRTime.current < 800) return;
     
     setIsProcessingLocal(true);
@@ -255,11 +289,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (ocrData && ocrData.fullText.length > 5) {
         setDetectedData(ocrData);
         
-        // Use fullText hash to prevent re-adding the exact same card in the same view
         const textHash = ocrData.fullText.substring(0, 30); 
         if (!processedTextHashes.current.has(textHash)) {
           processedTextHashes.current.add(textHash);
-          
+          lockTriggeredRef.current = true; // Found text, disable "unfound" trigger
+
           onCardDetected({ 
             id: Math.random().toString(36).substr(2,9), 
             name: ocrData.name !== "Scanning Asset..." ? ocrData.name : "Unrecognized Asset", 
@@ -322,7 +356,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 style={{ transform: `translate(${jitter.x}px, ${jitter.y}px)` }}
               />
               
-              {/* Aggressive Scanning Sweep Line */}
               <line 
                 x1={visualCorners.tl.x} y1={lerp(visualCorners.tl.y, visualCorners.bl.y, (Math.sin(Date.now() / 200) + 1) / 2)}
                 x2={visualCorners.tr.x} y2={lerp(visualCorners.tr.y, visualCorners.br.y, (Math.sin(Date.now() / 200) + 1) / 2)}
@@ -347,7 +380,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
          <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.05)_1.5px,transparent_1.5px)] bg-[size:40px_40px]" />
       </div>
 
-      {/* TOP STATUS BAR */}
       <div className="absolute top-10 left-1/2 -translate-x-1/2 z-50 w-full px-10 flex flex-col items-center">
         <div className={`bg-slate-900/98 backdrop-blur-3xl border-2 border-white/10 rounded-[3rem] px-14 py-8 shadow-[0_0_80px_rgba(0,0,0,0.8)] transition-all duration-300 ${visualCorners ? 'border-cyan-400 scale-105' : 'opacity-60'}`}>
            <div className="flex flex-col text-center">
@@ -364,7 +396,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         </div>
       </div>
 
-      {/* ASSET CAPTURED MODAL */}
       {scanResult && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[70]">
            <div className="bg-slate-950/98 backdrop-blur-3xl border-[8px] border-cyan-500/40 p-20 rounded-[5rem] shadow-[0_0_200px_rgba(34,211,238,0.5)] animate-in zoom-in-90 duration-200 text-center relative overflow-hidden">
@@ -377,7 +408,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         </div>
       )}
 
-      {/* BOTTOM CONTROLS */}
       <div className="absolute bottom-16 left-0 right-0 z-50 px-16 flex justify-between items-center pointer-events-none">
         <button 
           onClick={() => fileInputRef.current?.click()} 
