@@ -3,30 +3,47 @@ import { SURGING_SPARKS_DATA } from '../data/surgingSparks';
 import { IdentificationResult } from '../types';
 
 /**
- * Intelligent local matching engine.
- * Prioritizes card number (e.g. "036/191") as it's the unique identifier.
- * Falls back to name fuzzy matching if number is not detected.
+ * Advanced Matching Algorithm.
+ * Assigns weights to different detection features to find the most likely asset.
  */
 export const matchToLocalDatabase = (name: string, number: string): IdentificationResult | null => {
   if (!name && !number) return null;
 
   const normalizedName = name.toLowerCase().trim();
-  const normalizedNumber = number.replace(/\s/g, ''); // Remove spaces from "036 / 191"
+  const normalizedNumber = number.replace(/\s/g, ''); 
 
-  // 1. Try exact number match (High Confidence)
-  if (normalizedNumber) {
-    const numberMatch = SURGING_SPARKS_DATA.find(card => card.number === normalizedNumber);
-    if (numberMatch) return numberMatch;
+  let bestMatch: IdentificationResult | null = null;
+  let highestScore = 0;
+
+  for (const card of SURGING_SPARKS_DATA) {
+    let score = 0;
+    const cardName = card.name.toLowerCase();
+    const cardNumber = card.number.replace(/\s/g, '');
+
+    // 1. Precise Number Match (Weight: 10)
+    if (normalizedNumber && cardNumber === normalizedNumber) {
+      score += 10;
+    } 
+    // 2. Partial Number Match (Weight: 5)
+    else if (normalizedNumber && normalizedNumber.includes('/') && cardNumber.split('/')[0] === normalizedNumber.split('/')[0]) {
+      score += 5;
+    }
+
+    // 3. Name Match (Weight: 8 for exact, 4 for partial)
+    if (normalizedName) {
+      if (cardName === normalizedName) {
+        score += 8;
+      } else if (cardName.includes(normalizedName) || normalizedName.includes(cardName)) {
+        score += 4;
+      }
+    }
+
+    if (score > highestScore) {
+      highestScore = score;
+      bestMatch = card;
+    }
   }
 
-  // 2. Try Name Match (Medium Confidence)
-  if (normalizedName) {
-    const nameMatch = SURGING_SPARKS_DATA.find(card => 
-      card.name.toLowerCase().includes(normalizedName) ||
-      normalizedName.includes(card.name.toLowerCase())
-    );
-    if (nameMatch) return nameMatch;
-  }
-
-  return null;
+  // Minimum threshold to prevent false positives
+  return highestScore >= 4 ? bestMatch : null;
 };

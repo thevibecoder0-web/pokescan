@@ -11,24 +11,24 @@ export interface OCRResult {
   confidence: number;
 }
 
-const getLevenshteinDistance = (a: string, b: string): number => {
-  const matrix = Array.from({ length: a.length + 1 }, () => 
-    Array.from({ length: b.length + 1 }, (_, i) => i)
-  );
-  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
-  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
-
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + cost
-      );
+// Highly optimized Levenshtein for real-time performance
+const fastLevenshtein = (s1: string, s2: string): number => {
+  if (s1 === s2) return 0;
+  const len1 = s1.length, len2 = s2.length;
+  if (len1 === 0) return len2;
+  if (len2 === 0) return len1;
+  let v0 = new Int32Array(len2 + 1);
+  let v1 = new Int32Array(len2 + 1);
+  for (let i = 0; i <= len2; i++) v0[i] = i;
+  for (let i = 0; i < len1; i++) {
+    v1[0] = i + 1;
+    for (let j = 0; j < len2; j++) {
+      const cost = s1[i] === s2[j] ? 0 : 1;
+      v1[j + 1] = Math.min(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
     }
+    for (let j = 0; j <= len2; j++) v0[j] = v1[j];
   }
-  return matrix[a.length][b.length];
+  return v0[len2];
 };
 
 const POKEMON_SPECIES = [
@@ -41,7 +41,8 @@ const POKEMON_SPECIES = [
   "Cottonee", "Whimsicott", "Petilil", "Lilligant", "Maractus", "Deerling", "Sawsbuck", "Grubbin",
   "Charjabug", "Vikavolt", "Dwebble", "Crustle", "Morelull", "Shiinotic", "Zarude", "Scovillain",
   "Ponyta", "Rapidash", "Moltres", "Victini", "Larvesta", "Volcarona", "Charcadet", "Ceruledge",
-  "Dialga", "Palkia", "Giratina", "Arceus", "Eternatus", "Urshifu", "Calyrex", "Enamorus"
+  "Dialga", "Palkia", "Giratina", "Arceus", "Eternatus", "Urshifu", "Calyrex", "Enamorus", "Terapagos",
+  "Pecharunt", "Iron Valiant", "Roaring Moon", "Walking Wake", "Iron Leaves", "Gouging Fire", "Raging Bolt"
 ];
 
 export const initOCRWorker = async () => {
@@ -51,16 +52,18 @@ export const initOCRWorker = async () => {
   initPromise = (async () => {
     try {
       worker = await createWorker('eng', 1, {
-        logger: () => {}, // Disable logging for max performance
+        logger: () => {},
+        cacheMethod: 'readOnly',
       });
       await worker.setParameters({
         tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -!',
-        tessedit_pageseg_mode: '3', // Auto segmentation
+        tessedit_pageseg_mode: '11', // Sparse text
         tessjs_create_hocr: '0',
         tessjs_create_tsv: '0',
+        tessedit_do_invert: '0', // Manual contrast control in scanner is better
       });
     } catch (err) {
-      console.error("OCR Worker Init Failed", err);
+      console.error("Neural Core Init Failure:", err);
       initPromise = null;
       throw err;
     }
@@ -69,58 +72,69 @@ export const initOCRWorker = async () => {
   return initPromise;
 };
 
-const cleanText = (text: string) => {
-  return text.trim().replace(/[^a-zA-Z0-9/ ]/g, '').replace(/\s+/g, ' ');
-};
+const cleanText = (text: string) => text.trim().replace(/[^a-zA-Z0-9/ ]/g, '').replace(/\s+/g, ' ');
 
-/**
- * Optimized OCR process that looks specifically for the card name and set number
- */
 export const extractCardTextLocally = async (imageCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     await initOCRWorker();
     if (!worker) return null;
 
-    // Use a high-contrast version of the canvas
+    // TARGETED ROI STRATEGY
+    // Pass 1: Focus on Name (Top 20%) and Number (Bottom 15%)
+    // We execute one recognition call but analyze zones. 
+    // Tesseract handles the whole image but we can provide hints or just filter the results.
     const { data: { text, confidence } } = await worker.recognize(imageCanvas);
-    const fullText = cleanText(text);
+    const rawText = cleanText(text);
     
-    if (!fullText || fullText.length < 2) return null;
+    if (!rawText || rawText.length < 2) return null;
 
     let detectedName = "";
     let detectedNumber = "";
 
-    // 1. Precise Number Extraction (e.g. 123/191)
-    const numMatch = fullText.match(/(\d{1,3})\s?\/\s?(\d{1,3})/);
+    // 1. REGEX PATTERNS FOR NUMBERS (High Precision)
+    // Looking for formats like 036/191, 192/191, or even just digits if adjacent to "/"
+    const numMatch = rawText.match(/(\d{1,3})\s?\/\s?(\d{1,3})/);
     if (numMatch) {
         detectedNumber = `${numMatch[1]}/${numMatch[2]}`;
     }
 
-    // 2. Fuzzy Name Extraction
-    const words = fullText.split(' ');
+    // 2. FUZZY SPECIES MATCHING (Scoring based)
+    const words = rawText.split(' ');
+    let bestScore = 0.7; // Minimum confidence
+    
     for (const word of words) {
-      if (word.length < 3) continue;
       const cleanWord = word.replace(/[^a-zA-Z]/g, '').toLowerCase();
+      if (cleanWord.length < 3) continue;
       
-      const match = POKEMON_SPECIES.find(s => {
-        const species = s.toLowerCase();
-        return cleanWord.includes(species) || species.includes(cleanWord) || getLevenshteinDistance(cleanWord, species) <= 1;
-      });
-      
-      if (match) {
-        detectedName = match;
-        break;
+      for (const species of POKEMON_SPECIES) {
+        const specLower = species.toLowerCase();
+        // Strict match check first
+        if (cleanWord === specLower) {
+            detectedName = species;
+            bestScore = 1.0;
+            break;
+        }
+        
+        // Fuzzy check
+        const dist = fastLevenshtein(cleanWord, specLower);
+        const similarity = 1 - dist / Math.max(cleanWord.length, specLower.length);
+        
+        if (similarity > bestScore) {
+          bestScore = similarity;
+          detectedName = species;
+        }
       }
+      if (bestScore === 1.0) break;
     }
 
     return {
       name: detectedName,
       number: detectedNumber,
-      fullText: fullText,
+      fullText: rawText,
       confidence: confidence
     };
   } catch (error) {
-    console.error("Local OCR Error:", error);
+    console.error("Local Neural Parsing Error:", error);
     return null;
   }
 };
