@@ -43,6 +43,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [isProcessing, setIsProcessing] = useState(false);
   
   const lastVerifiedKey = useRef<string>("");
+  const lastFoundTime = useRef<number>(0);
   const animationFrameRef = useRef<number>(null);
 
   useEffect(() => {
@@ -88,7 +89,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (targetCorners) {
         setVisualCorners(prev => {
           if (!prev) return targetCorners;
-          const factor = 0.18; // Balanced smoothness for 16Hz updates
+          // Faster lerp (0.25) to track moving cards better at 16Hz logic
+          const factor = 0.25; 
           return {
             tl: { x: lerp(prev.tl.x, targetCorners.tl.x, factor), y: lerp(prev.tl.y, targetCorners.tl.y, factor) },
             tr: { x: lerp(prev.tr.x, targetCorners.tr.x, factor), y: lerp(prev.tr.y, targetCorners.tr.y, factor) },
@@ -96,6 +98,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             br: { x: lerp(prev.br.x, targetCorners.br.x, factor), y: lerp(prev.br.y, targetCorners.br.y, factor) }
           };
         });
+      } else {
+        // If target is null, smoothly fade out or null visual corners
+        setVisualCorners(null);
       }
       animationFrameRef.current = requestAnimationFrame(animate);
     };
@@ -116,7 +121,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   }, []);
 
   /**
-   * PERSISTENT COMPUTER VISION: Only updates on success to keep HUD locked
+   * REFINED COMPUTER VISION:
+   * 1. Adaptive Thresholding (robust to glare/shadows)
+   * 2. Morphological Closing (joins broken edges)
+   * 3. Stale State Decay (clears HUD if card is removed)
    */
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return; 
@@ -132,19 +140,22 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
     try {
       let src = cv.imread(canvas);
-      let dst = new cv.Mat();
       let gray = new cv.Mat();
+      let thresh = new cv.Mat();
       
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-      cv.Canny(gray, dst, 40, 120);
+      cv.medianBlur(gray, gray, 5); // Smooth noise
       
-      let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-      cv.dilate(dst, dst, kernel);
+      // Adaptive thresholding: Dynamic exposure compensation
+      cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
+      
+      // Morphological Closing: Bridges gaps in card border detection
+      let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+      cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, M);
       
       let contours = new cv.MatVector();
       let hierarchy = new cv.Mat();
-      cv.findContours(dst, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
       let maxArea = 0;
       let foundCorners: CardCorners | null = null;
@@ -153,7 +164,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
         
-        if (area > (canvas.width * canvas.height * 0.1)) {
+        // At least 6% of view area required to be a valid card
+        if (area > (canvas.width * canvas.height * 0.06)) {
           let approx = new cv.Mat();
           let peri = cv.arcLength(cnt, true);
           cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
@@ -177,11 +189,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               bl: sortedByDiff[3]
             };
 
-            const widthTop = Math.hypot(potentialCorners.tr.x - potentialCorners.tl.x, potentialCorners.tr.y - potentialCorners.tl.y);
-            const heightLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
-            const ratio = widthTop / heightLeft;
+            const wTop = Math.hypot(potentialCorners.tr.x - potentialCorners.tl.x, potentialCorners.tr.y - potentialCorners.tl.y);
+            const hLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
+            const ratio = wTop / hLeft;
 
-            if (ratio > 0.60 && ratio < 0.92) {
+            // Pokemon card standard is ~0.71. Accept wider range (0.55 - 0.95) for angles.
+            if (ratio > 0.55 && ratio < 0.95) {
               if (area > maxArea) {
                 maxArea = area;
                 foundCorners = potentialCorners;
@@ -193,20 +206,26 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         cnt.delete();
       }
 
-      // PERSISTENCE LOGIC: If a card is not found in this frame, do NOT clear targetCorners.
-      // This keeps the HUD mesh at the last detected area.
+      // STATE LOGIC:
       if (foundCorners) {
         setTargetCorners(foundCorners);
+        lastFoundTime.current = Date.now();
+      } else {
+        // STALE TRACKING DECAY:
+        // If we haven't seen a card in 800ms, clear the HUD markers entirely.
+        if (Date.now() - lastFoundTime.current > 800) {
+           setTargetCorners(null);
+        }
       }
 
-      src.delete(); dst.delete(); gray.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
+      src.delete(); gray.delete(); thresh.delete(); M.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {
-      console.warn("CV Frame Snap Error");
+      console.warn("CV Frame Failure");
     }
   }, [cvReady]);
 
   /**
-   * VAULT: Finalize asset
+   * VAULT: Store Asset and Clear UI
    */
   const instantVault = async (data: OCRResult) => {
     if (!data.name || !data.number) return;
@@ -215,8 +234,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     if (lastVerifiedKey.current === verificationKey) return;
     lastVerifiedKey.current = verificationKey;
 
+    // IMMEDIATELY clear the tracking HUD markers so they don't stay behind during success modal
+    setTargetCorners(null);
+    setVisualCorners(null);
+
     const finalCard: PokemonCard = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: Math.random().toString(36).substring(2, 11),
       name: data.name,
       number: data.number,
       set: "Neural Scan",
@@ -237,7 +260,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   };
 
   /**
-   * SYNC LOOP: 16Hz Logic (62.5ms)
+   * SYNC LOOP: 16Hz (62.5ms)
    */
   useEffect(() => {
     let interval: number;
@@ -288,7 +311,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       
       {/* HUD: Fluid Persistent Mesh */}
       {visualCorners && viewBox.w > 0 && !scanResult && (
-        <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
+        <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden animate-in fade-in duration-300">
           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
              <path 
                 d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`}
@@ -333,12 +356,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         )}
       </div>
 
-      {/* Persistence Controls */}
+      {/* Manual Reset Control */}
       <div className="absolute bottom-10 right-10 flex flex-col gap-4">
         <button 
             onClick={handleReset}
             className="pointer-events-auto bg-slate-900/90 hover:bg-red-600 backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group"
-            title="Reset Lock"
+            title="Purge HUD State"
         >
             <svg className="w-8 h-8 text-white group-hover:rotate-180 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
