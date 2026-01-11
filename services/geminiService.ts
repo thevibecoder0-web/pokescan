@@ -33,29 +33,38 @@ const getScannerConfig = (isRetry: boolean) => ({
   },
 });
 
+// Identifies a Pokemon card from an image using Gemini's multi-modal capabilities and Google Search grounding.
 export const identifyPokemonCard = async (base64Image: string, isRetry: boolean = false): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: [
-        {
-          parts: [
-            { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-            { text: isRetry 
-                ? "RECOVERY_SCAN: Previous attempt failed. Identify this asset using all visual cues (art, symbols)." 
-                : "IDENTIFY_ASSET: Extract name and search live market price." 
-            },
-          ],
-        },
-      ],
+      contents: {
+        parts: [
+          { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+          { text: isRetry 
+              ? "RECOVERY_SCAN: Previous attempt failed. Identify this asset using all visual cues (art, symbols)." 
+              : "IDENTIFY_ASSET: Extract name and search live market price." 
+          },
+        ],
+      },
       config: getScannerConfig(isRetry) as any,
     });
     
-    const text = response.text || "{}";
-    const result = JSON.parse(text);
+    // Extract grounding URLs if available from the search tool
+    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    const sourceUrl = groundingChunks?.[0]?.web?.uri;
+
+    let result;
+    try {
+      // Guideline: Use .text property to access extracted text.
+      const rawText = response.text || "{}";
+      result = JSON.parse(rawText.trim());
+    } catch (e) {
+      console.warn("Gemini returned non-JSON text with search grounding. Attempting repair.");
+      return null;
+    }
     
-    // Check if the AI returned a valid identity or the failure flag
     if (!result.name || result.name === "DEEP_SCAN_REQUIRED") {
         return null;
     }
@@ -70,7 +79,8 @@ export const identifyPokemonCard = async (base64Image: string, isRetry: boolean 
       hp: "0",
       abilities: [],
       attacks: [],
-      imageUrl: ""
+      imageUrl: "",
+      sourceUrl: sourceUrl
     } as IdentificationResult;
   } catch (error) {
     console.error("Neural Identification Error:", error);
@@ -78,6 +88,7 @@ export const identifyPokemonCard = async (base64Image: string, isRetry: boolean 
   }
 };
 
+// Performs a manual lookup of card data based on a text query, utilizing Google Search grounding for real-time prices.
 export const manualCardLookup = async (query: string): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -85,7 +96,7 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
       model: MODEL_NAME,
       contents: `Look up '${query}'. Provide TCG data and market value.`,
       config: {
-        systemInstruction: "Expert TCG assistant. Provide card data and market value.",
+        systemInstruction: "Expert TCG assistant. Return card data and market value in JSON format.",
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
         responseSchema: {
@@ -116,14 +127,26 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
         }
       } as any,
     });
-    const result = JSON.parse(response.text || "{}") as IdentificationResult;
-    return { ...result };
+
+    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    const sourceUrl = groundingChunks?.[0]?.web?.uri;
+
+    let result;
+    try {
+      result = JSON.parse(response.text || "{}");
+    } catch (e) {
+      console.error("Failed to parse manual lookup result:", e);
+      return null;
+    }
+
+    return { ...result, sourceUrl };
   } catch (error) {
     console.error("Manual Lookup Error:", error);
     return null;
   }
 };
 
+// Fetches a list of cards from a specific TCG set using Gemini and Google Search.
 export const fetchCardsFromSet = async (setName: string): Promise<Partial<IdentificationResult>[]> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -131,7 +154,7 @@ export const fetchCardsFromSet = async (setName: string): Promise<Partial<Identi
       model: MODEL_NAME,
       contents: `List cards from the Pokémon TCG set "${setName}".`,
       config: {
-        systemInstruction: "Return set list with names, numbers, and market prices.",
+        systemInstruction: "Return set list with names, numbers, and market prices as a JSON array.",
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
         responseSchema: {
@@ -152,7 +175,13 @@ export const fetchCardsFromSet = async (setName: string): Promise<Partial<Identi
         }
       } as any,
     });
-    return JSON.parse(response.text || "[]");
+
+    try {
+      return JSON.parse(response.text || "[]");
+    } catch (e) {
+      console.warn("JSON Parse failed for set fetch results");
+      return [];
+    }
   } catch (error) {
     console.error("Fetch Set Cards Error:", error);
     return [];
