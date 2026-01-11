@@ -95,7 +95,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     lastAIScanTime.current = Date.now();
     try {
       const res = await identifyPokemonCard(base64);
-      if (res && res.name) {
+      if (res && res.name && res.name !== "(unfound)") {
         const hash = `ai_${res.name}_${res.number}`;
         if (!processedTextHashes.current.has(hash)) {
           processedTextHashes.current.add(hash);
@@ -177,13 +177,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     });
     setScanResult({ name: "(unfound)", price: "--" });
     setTimeout(() => setScanResult(null), 2000);
-    // Fixed: changed onAddCard dependency to onCardDetected
   }, [onCardDetected]);
 
-  /**
-   * HIGH RESOLUTION WARP (800x1116)
-   * This is critical for OCR to actually see the text.
-   */
   const updateCardWarp = useCallback(() => {
     if (!cvReady || !targetCorners || !videoRef.current || !cardCanvasRef.current) return;
     try {
@@ -191,14 +186,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       const corners = targetCorners;
       let src = cv.imread(v);
       let dst = new cv.Mat();
-      // Increase size to 800x1116 for high-fidelity text recognition
       let dsize = new cv.Size(800, 1116);
       let sc = cv.matFromArray(4, 1, cv.CV_32FC2, [corners.tl.x, corners.tl.y, corners.tr.x, corners.tr.y, corners.br.x, corners.br.y, corners.bl.x, corners.bl.y]);
       let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 800, 0, 800, 1116, 0, 1116]);
       let M = cv.getPerspectiveTransform(sc, dc);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
       cv.imshow(cardCanvasRef.current, dst);
-      
       src.delete(); dst.delete(); M.delete(); sc.delete(); dc.delete();
     } catch (e) {
       console.warn("Warp error", e);
@@ -253,7 +246,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       if (found) { 
         setTargetCorners(found);
-        setStabilityScore(s => Math.min(s + 1, 20));
+        setStabilityScore(s => Math.min(s + 1, 30));
         
         if (lockStartTimeRef.current === 0) {
             lockStartTimeRef.current = Date.now();
@@ -261,18 +254,21 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
         updateCardWarp();
 
+        // 8-second timeout for "(unfound)" as requested
         if (stabilityScore > 10 && !lockTriggeredRef.current && !scanResult) {
-            if (Date.now() - lockStartTimeRef.current > 2000) {
+            if (Date.now() - lockStartTimeRef.current > 8000) {
                 captureUnfound();
             }
         }
         
-        if (stabilityScore > 15 && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 10000) {
+        // Trigger AI identification more aggressively once geometric lock is stable
+        // Since Tesseract is unreliable, we rely more on the Gemini Pro Vision model
+        if (stabilityScore > 8 && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 6000) {
           const snapshot = document.createElement('canvas');
           snapshot.width = v.videoWidth;
           snapshot.height = v.videoHeight;
           snapshot.getContext('2d')?.drawImage(v, 0, 0);
-          processAILookup(snapshot.toDataURL('image/jpeg', 0.82).split(',')[1]);
+          processAILookup(snapshot.toDataURL('image/jpeg', 0.85).split(',')[1]);
         }
       } else {
         setTargetCorners(null);
@@ -289,14 +285,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   const runLocalOCR = useCallback(async () => {
     if (!cvReady || !targetCorners || isProcessingLocal || scanResult || !videoRef.current || !cardCanvasRef.current) return;
-    // Debounce OCR runs to save CPU
-    if (Date.now() - lastLocalOCRTime.current < 1200) return;
+    if (Date.now() - lastLocalOCRTime.current < 1500) return;
     
     setIsProcessingLocal(true);
     lastLocalOCRTime.current = Date.now();
     try {
       const ocrData = await extractAllCardText(cardCanvasRef.current);
-      if (ocrData && ocrData.fullText.trim().length > 5) {
+      if (ocrData && ocrData.fullText.trim().length > 6) {
         setDetectedData(ocrData);
         
         const textHash = ocrData.fullText.substring(0, 40); 
@@ -306,7 +301,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
           onCardDetected({ 
             id: Math.random().toString(36).substr(2,9), 
-            name: ocrData.name !== "Unidentified Asset" ? ocrData.name : "Text Pattern Detected", 
+            name: ocrData.name !== "Unidentified Asset" ? ocrData.name : "Target_Locked", 
             number: ocrData.number, 
             set: "Live Neural Scan", 
             rarity: "Detected", 
@@ -316,7 +311,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             imageUrl: cardCanvasRef.current.toDataURL() 
           });
           
-          setScanResult({ name: ocrData.name !== "Unidentified Asset" ? ocrData.name : "Text Detected", price: "--" });
+          setScanResult({ name: ocrData.name !== "Unidentified Asset" ? ocrData.name : "Asset Sync", price: "--" });
           setTimeout(() => setScanResult(null), 2000);
         }
       }
@@ -342,7 +337,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
-      {/* SCANNER OVERLAY */}
       <div className="absolute inset-0 z-20 pointer-events-none">
          {viewBox.w > 0 && visualCorners && (
            <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
@@ -360,7 +354,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
               <g className="font-orbitron font-black text-[10px] fill-cyan-400 tracking-[0.3em]">
                 <text x={visualCorners.tl.x} y={visualCorners.tl.y - 15}>ASSET_LOCKED</text>
-                <text x={visualCorners.bl.x} y={visualCorners.bl.y + 25}>PRECISION_STABILITY: {stabilityScore * 5}%</text>
+                <text x={visualCorners.bl.x} y={visualCorners.bl.y + 25}>PRECISION_STABILITY: {Math.round(stabilityScore * 3.33)}%</text>
               </g>
 
               <g className="fill-white stroke-cyan-500 stroke-2">
@@ -371,7 +365,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               </g>
            </svg>
          )}
-         
          <div className="absolute inset-0 border-[50px] border-slate-950/40 pointer-events-none" />
          <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.05)_1.5px,transparent_1.5px)] bg-[size:40px_40px]" />
       </div>
@@ -382,11 +375,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               <div className="flex items-center justify-center gap-3 mb-2">
                 <div className={`w-2 h-2 rounded-full ${visualCorners ? 'bg-cyan-400 animate-pulse shadow-[0_0_10px_cyan]' : 'bg-slate-700'}`} />
                 <span className="text-[10px] font-orbitron font-black text-cyan-500 tracking-[0.6em] uppercase">
-                  {stabilityScore > 10 ? 'HIGH_FIDELITY_STREAM' : 'SEEKING_DATA_SIGNALS'}
+                  {stabilityScore > 10 ? 'STREAMING_AI_DATA' : 'SCANNING_ENVIRONMENT'}
                 </span>
               </div>
               <h2 className="text-3xl md:text-4xl font-orbitron font-black text-white uppercase tracking-tighter max-w-lg truncate">
-                {detectedData?.name || (isProcessingLocal ? 'DECODING_VISUALS...' : 'SCANNING_ENVIRONMENT')}
+                {detectedData?.name || (isDeepScanning ? 'AI_IDENTIFICATION...' : (isProcessingLocal ? 'EXTRACTING_TEXT...' : 'POSITION_TARGET'))}
               </h2>
            </div>
         </div>

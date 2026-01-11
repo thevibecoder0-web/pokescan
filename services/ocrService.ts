@@ -39,7 +39,8 @@ const POKEMON_SPECIES = [
   "Ditto", "Gardevoir", "Sylveon", "Umbreon", "Espeon", "Tyranitar", "Scizor", "Alakazam", "Machamp",
   "Arceus", "Dialga", "Palkia", "Giratina", "Darkrai", "Cresselia", "Heatran", "Regigigas", "Manaphy",
   "Zeraora", "Marshadow", "Meltan", "Melmetal", "Garchomp", "Salamence", "Metagross", "Hydreigon", "Goodra",
-  "Kommo-o", "Dragapult", "Baxcalibur", "Roaring Moon", "Iron Valiant", "Iron Hands", "Flutter Mane"
+  "Kommo-o", "Dragapult", "Baxcalibur", "Roaring Moon", "Iron Valiant", "Iron Hands", "Flutter Mane",
+  "Centiskorch", "Orbeetle", "Drednaw", "Coalossal", "Appletun", "Flapple", "Toxtricity", "Sandaconda", "Grimmsnarl"
 ];
 
 export const initOCRWorker = async () => {
@@ -49,7 +50,7 @@ export const initOCRWorker = async () => {
     worker = await createWorker('eng');
     await worker.setParameters({
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -!',
-      tessedit_pageseg_mode: '3', // Fully automatic page segmentation, but no OSD.
+      tessedit_pageseg_mode: '3', 
       tessjs_create_hocr: '0',
       tessjs_create_tsv: '0',
     });
@@ -64,14 +65,10 @@ const cleanText = (text: string) => {
   return text.trim().replace(/[\n\r]/g, ' ').replace(/\s+/g, ' ');
 };
 
-/**
- * Enhanced Card OCR with advanced preprocessing
- */
 export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     if (!worker) await initOCRWorker();
     
-    // We expect a high-res canvas (e.g. 800x1116)
     const ctx = cardCanvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     
@@ -80,38 +77,18 @@ export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise
     const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
 
-    // Phase 1: Grayscale & Contrast Stretch
-    let min = 255, max = 0;
+    // Softened preprocessing: just grayscale and simple contrast
     for (let i = 0; i < data.length; i += 4) {
-      const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      if (avg < min) min = avg;
-      if (avg > max) max = avg;
+      const gray = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+      data[i] = data[i+1] = data[i+2] = gray;
     }
-
-    // Phase 2: Adaptive Sharpening & Thresholding
-    // We use a simple high-pass logic to emphasize text edges
-    for (let i = 0; i < data.length; i += 4) {
-      let gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      
-      // Normalized stretch
-      gray = ((gray - min) / (max - min)) * 255;
-      
-      // Harsh thresholding for Tesseract
-      const val = gray > 140 ? 255 : 0;
-      data[i] = data[i + 1] = data[i + 2] = val;
-    }
-    
-    // Put processed data back for visual confirmation if debugging, 
-    // but primarily for Tesseract to read from the canvas
     ctx.putImageData(imgData, 0, 0);
 
     const { data: { text, confidence } } = await worker.recognize(cardCanvas);
     const fullText = cleanText(text);
     
-    // REQUIREMENT: As soon as it finds ANY text at all, add it
-    if (!fullText || fullText.length < 3) return null;
+    if (!fullText || fullText.length < 4) return null;
 
-    // Greedy Name Identification
     let detectedName = "";
     const words = fullText.split(' ');
     for (const word of words) {
@@ -129,7 +106,6 @@ export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise
       }
     }
 
-    // Improved Number Extraction (looking for X/Y pattern)
     const numMatch = fullText.match(/(\d{1,3}\/\d{1,3})/);
     const detectedNumber = numMatch ? numMatch[0] : "???";
 
