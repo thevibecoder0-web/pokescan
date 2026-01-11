@@ -44,9 +44,9 @@ const App: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col pb-24 md:pb-0">
+    <div className="h-screen bg-slate-950 flex flex-col overflow-hidden">
       {/* Top Header */}
-      <header className="bg-slate-950/80 backdrop-blur-md border-b border-slate-800 px-4 py-4 sticky top-0 z-50">
+      <header className="bg-slate-950/80 backdrop-blur-md border-b border-slate-800 px-4 py-4 z-50 shrink-0">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-red-600 rounded-full flex items-center justify-center shadow-[0_0_15px_rgba(220,38,38,0.4)] cursor-pointer hover:rotate-180 transition-transform duration-500" onClick={() => setViewMode('collection')}>
@@ -109,16 +109,14 @@ const App: React.FC = () => {
       </header>
 
       {/* Main View Area */}
-      <main className="flex-1 overflow-y-auto px-4 py-6 max-w-7xl mx-auto w-full">
+      <main className={`flex-1 overflow-y-auto w-full flex flex-col ${viewMode === 'scanner' ? 'p-0 max-w-none' : 'px-4 py-6 max-w-7xl mx-auto'}`}>
         {viewMode === 'scanner' && (
-          <div className="h-full flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300">
-             <div className="w-full max-w-2xl">
-                <Scanner 
-                   isScanning={true} 
-                   setIsScanning={(val) => !val && setViewMode('collection')} 
-                   onCardDetected={addCard} 
-                />
-             </div>
+          <div className="flex-1 w-full h-full animate-in fade-in duration-300">
+            <Scanner 
+                isScanning={true} 
+                setIsScanning={(val) => !val && setViewMode('collection')} 
+                onCardDetected={addCard} 
+            />
           </div>
         )}
 
@@ -181,7 +179,7 @@ const App: React.FC = () => {
       </main>
 
       {/* Mobile Navigation Footer */}
-      <nav className="md:hidden bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 fixed bottom-0 left-0 right-0 z-50">
+      <nav className="md:hidden bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 sticky bottom-0 left-0 right-0 z-50 shrink-0">
         <div className="flex justify-around items-center h-20 px-2">
           <button 
             onClick={() => setViewMode('collection')}
