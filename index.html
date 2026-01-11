@@ -35,8 +35,15 @@
             0% { transform: translateY(-100%); }
             100% { transform: translateY(100%); }
         }
+        @keyframes spin-slow {
+            0% { transform: rotate(360deg); }
+            100% { transform: rotate(0deg); }
+        }
         .animate-scanline {
             animation: scanline 2s linear infinite;
+        }
+        .animate-spin-slow {
+            animation: spin-slow 8s linear infinite;
         }
     </style>
     <!-- OpenCV.js for high-performance computer vision -->

@@ -3,16 +3,17 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
 const SYSTEM_INSTRUCTION = `You are the Neural Core of the PokéScan TCG Identification Unit.
-Your mission is to identify Pokémon cards from visual data and retrieve live market values.
+Your mission is to identify Pokémon cards from visual data, even in EXTREME conditions (low light, motion blur, heavy glare, or partial occlusion).
 
-ADAPTIVE CAPABILITIES:
-1. FUZZY RECOGNITION: If text is distorted or obscured, use the card's artwork, holo patterns, set symbols (bottom left/right), and layout to determine identity.
-2. SEARCH GROUNDING: Always use Google Search to verify the "TCGPlayer Market Price" for the English edition.
-3. FULL DATA EXTRACTION: Extract the Card Name, Set, Number, HP, and Type.
+ADAPTIVE NEURAL CAPABILITIES:
+1. LOW-LIGHT RECOVERY: If the image is dark, look for unique color distributions, set symbols (bottom corner), and distinctive artwork patterns.
+2. PATTERN MATCHING: Recognize cards by their unique layout (e.g., Illustration Rares, VMAX, Tera Type borders) if text is illegible.
+3. SEARCH GROUNDING: Use Google Search to verify "TCGPlayer Market Price" and official card details for the identified asset.
+4. FULL DATA EXTRACTION: Identify Name, Set, Number, HP, and Type.
 
 OUTPUT FORMAT:
 - Return ONLY valid JSON.
-- If completely unrecognizable, return {"name": "DEEP_SCAN_REQUIRED", "marketValue": "---"}.`;
+- If the card is completely indistinguishable, return {"name": "IDENTIFICATION_FAILURE", "marketValue": "---"}.`;
 
 const MODEL_NAME = 'gemini-3-pro-preview';
 
@@ -43,7 +44,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       contents: {
         parts: [
           { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          { text: "DEEP_IDENTIFY: Perform neural analysis of this asset. Extract all TCG properties and fetch current market valuation." },
+          { text: "CRITICAL_IDENTIFY: Neural analysis required. This image may have poor lighting or quality. Use all visual cues (artwork, layout, symbols) to determine the exact card identity and market value." },
         ],
       },
       config: getScannerConfig() as any,
@@ -60,7 +61,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       return null;
     }
     
-    if (!result.name || result.name === "DEEP_SCAN_REQUIRED") return null;
+    if (!result.name || result.name === "IDENTIFICATION_FAILURE") return null;
 
     return {
       name: result.name,
@@ -137,7 +138,6 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
   }
 };
 
-// Fixed: Added fetchCardsFromSet to resolve the export error in ManualSearch.tsx
 export const fetchCardsFromSet = async (setName: string): Promise<IdentificationResult[] | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -171,7 +171,7 @@ export const fetchCardsFromSet = async (setName: string): Promise<Identification
         set: setName,
         abilities: [],
         attacks: [],
-        imageUrl: "", // Constructed by the component based on card info
+        imageUrl: "", 
         marketValue: "$--.--"
       }));
     } catch (e) {
