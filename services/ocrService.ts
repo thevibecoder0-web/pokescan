@@ -5,7 +5,7 @@ let worker: any = null;
 
 export interface OCRResult {
   name: string;
-  number: string | null;
+  number: string;
   bbox: { x0: number; y0: number; x1: number; y1: number } | null;
   strategyUsed: string;
 }
@@ -41,25 +41,40 @@ const initWorker = async () => {
 };
 
 /**
- * Adaptive Multi-Region OCR
- * Logic:
- * 1. Check Top (Name) + Bottom Left (Number)
- * 2. If no Number, check Bottom Right (Classic/Promos)
- * 3. If still no Number, check the whole card for patterns
+ * Optimized Search Logic:
+ * 1. STANDARD: Top (Name) + Bottom Left (Number)
+ * 2. ALTERNATE: Top (Name) + Bottom Right (Classic/Japanese/Promos)
+ * 3. GLOBAL: Full Scan (Search everywhere)
+ * 
+ * To auto-add, we MUST find both Name AND Number.
  */
 export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     await initWorker();
-    const ctx = cardCanvas.getContext('2d');
-    if (!ctx) return null;
-
     const w = cardCanvas.width;
     const h = cardCanvas.height;
 
     const strategies = [
-      { name: "STANDARD_BOTTOM_LEFT", regions: [{ x: 0, y: 0, w, h: h * 0.2 }, { x: 0, y: h * 0.8, w: w * 0.45, h: h * 0.2 }] },
-      { name: "CLASSIC_BOTTOM_RIGHT", regions: [{ x: 0, y: 0, w, h: h * 0.2 }, { x: w * 0.55, y: h * 0.8, w: w * 0.45, h: h * 0.2 }] },
-      { name: "GLOBAL_RECOVERY", regions: [{ x: 0, y: 0, w, h }] }
+      { 
+        name: "PRIMARY_LOCK", 
+        regions: [
+          { x: 0, y: 0, w, h: h * 0.18 }, // Name bar
+          { x: 0, y: h * 0.82, w: w * 0.4, h: h * 0.18 } // Bottom-left number
+        ] 
+      },
+      { 
+        name: "ALT_LOCK", 
+        regions: [
+          { x: 0, y: 0, w, h: h * 0.18 }, // Name bar
+          { x: w * 0.6, y: h * 0.82, w: w * 0.4, h: h * 0.18 } // Bottom-right number
+        ] 
+      },
+      { 
+        name: "FULL_SWEEP", 
+        regions: [
+          { x: 0, y: 0, w, h } // Full Card
+        ] 
+      }
     ];
 
     for (const strategy of strategies) {
@@ -67,7 +82,6 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
       const sCtx = scanCanvas.getContext('2d');
       if (!sCtx) continue;
 
-      // Concatenate all regions in strategy into one vertical strip for OCR
       const totalH = strategy.regions.reduce((acc, r) => acc + r.h, 0);
       scanCanvas.width = w;
       scanCanvas.height = totalH;
@@ -84,15 +98,17 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
       let detectedNumber: string | null = null;
       let nameBbox: any = null;
 
+      // Extract text patterns
       for (const word of data.words) {
         const text = word.text.trim();
         
-        // Pattern: XXX/XXX or XXXX or SXXX or TGXX
+        // Card number pattern (e.g. 123/191, 045, SV036)
         if (!detectedNumber) {
           const numMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})|(\b\d{3,4}\b)/i);
           if (numMatch) detectedNumber = numMatch[0];
         }
 
+        // Pokemon Name pattern
         if (!detectedName) {
           const cleanWord = text.replace(/[^a-zA-Z]/g, '');
           if (cleanWord.length >= 3) {
@@ -108,10 +124,10 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
         }
       }
 
-      // If we found both or it's the global pass and we found at least the name, return
-      if ((detectedName && detectedNumber) || (strategy.name === "GLOBAL_RECOVERY" && detectedName)) {
+      // STRICT CONDITION: Both name and number are mandatory for a strategy to succeed.
+      if (detectedName && detectedNumber) {
         return {
-          name: detectedName || "Unknown",
+          name: detectedName,
           number: detectedNumber,
           bbox: nameBbox,
           strategyUsed: strategy.name
