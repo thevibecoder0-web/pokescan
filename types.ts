@@ -5,15 +5,15 @@ export interface PokemonCard {
   set: string;
   number: string;
   rarity: string;
-  imageUrl: string;
+  imageUrl: string; // Online high-res URL
   marketPrice: number;
   currency: string;
   timestamp: number;
-  hp?: string;
   type?: string;
-  scanDate?: string;
-  sourceUrl?: string;
+  hp?: string;
   marketValue?: string;
+  sourceUrl?: string;
+  scanDate?: string;
 }
 
 export interface IdentificationResult {
@@ -22,12 +22,13 @@ export interface IdentificationResult {
   number: string;
   rarity: string;
   marketPrice: number;
-  currency: string;
+  imageUrl: string; // Standardized property name
   found: boolean;
-  imageUrl?: string;
   type?: string;
   hp?: string;
+  abilities?: string[];
+  attacks?: string[];
+  currency?: string;
   marketValue?: string;
-  abilities?: any[];
-  attacks?: any[];
+  sourceUrl?: string;
 }

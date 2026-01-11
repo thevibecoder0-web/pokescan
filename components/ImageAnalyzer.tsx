@@ -39,8 +39,10 @@ const ImageAnalyzer: React.FC<ImageAnalyzerProps> = ({ onAddCard, initialImage }
         setResult({
           id: Math.random().toString(36).substr(2, 9),
           ...data,
-          imageUrl: base64, // Use original high-res upload
+          imageUrl: data.imageUrl || base64, // Prefer online high-res if found
           scanDate: new Date().toLocaleDateString(),
+          timestamp: Date.now(),
+          currency: data.currency || "USD"
         });
       } else {
         setError("NEURAL_RECOGNITION_FAILED: Analysis inconclusive. Try better lighting.");
@@ -97,7 +99,7 @@ const ImageAnalyzer: React.FC<ImageAnalyzerProps> = ({ onAddCard, initialImage }
                   <div className="space-y-6">
                     <div className="flex justify-between py-4 border-b border-slate-800">
                       <span className="text-slate-500 text-[10px] font-black uppercase tracking-widest">Market Value</span>
-                      <span className="text-2xl font-orbitron font-black text-green-400">{result.marketValue}</span>
+                      <span className="text-2xl font-orbitron font-black text-green-400">{result.marketValue || `$${result.marketPrice.toFixed(2)}`}</span>
                     </div>
                     <div className="flex justify-between py-4 border-b border-slate-800">
                       <span className="text-slate-500 text-[10px] font-black uppercase tracking-widest">Set Reference</span>

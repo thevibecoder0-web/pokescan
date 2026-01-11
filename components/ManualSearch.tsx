@@ -67,6 +67,8 @@ const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
           // If we had local data but AI failed to get image, merge them
           imageUrl: data.imageUrl || preloadedData?.imageUrl || `https://placehold.co/400x560/1e293b/white?text=${encodeURIComponent(data.name)}`,
           scanDate: new Date().toLocaleDateString(),
+          timestamp: Date.now(),
+          currency: data.currency || "USD"
         });
       } else {
         setError("Card data not found in archives.");
@@ -197,7 +199,7 @@ const ManualSearch: React.FC<ManualSearchProps> = ({ onAddCard }) => {
                   </div>
                   <div className="text-right">
                     <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-2">Market Price</div>
-                    <div className="text-4xl font-orbitron font-bold text-green-500 drop-shadow-[0_0_10px_rgba(34,197,94,0.3)]">{result.marketValue || "$??.??"}</div>
+                    <div className="text-4xl font-orbitron font-bold text-green-500 drop-shadow-[0_0_10px_rgba(34,197,94,0.3)]">{result.marketValue || `$${result.marketPrice.toFixed(2)}`}</div>
                   </div>
                 </div>
 

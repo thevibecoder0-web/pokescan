@@ -55,7 +55,7 @@ const generateSetData = (): IdentificationResult[] => {
     { n: 192, name: "Cottonee (IR)", type: "Grass", rarity: "Illustration Rare" },
     { n: 193, name: "Victini (IR)", type: "Fire", rarity: "Illustration Rare" },
     { n: 199, name: "Squirtle (IR)", type: "Water", rarity: "Illustration Rare" },
-    { n: 238, name: "Pikachu ex (SIR)", type: "Lightning", rarity: "Special Illustration Rare" }
+    { n: 238, name: "Pikachu_ex_(SIR)", type: "Lightning", rarity: "Special Illustration Rare" }
   ];
 
   const fullSet: IdentificationResult[] = [];
@@ -72,8 +72,6 @@ const generateSetData = (): IdentificationResult[] => {
       type: existing?.type || "Colorless",
       hp: existing?.hp || "100",
       imageUrl: `https://images.pokemontcg.io/sv8/${i}_hires.png`,
-      abilities: [],
-      attacks: [],
       found: true,
       marketPrice: 0,
       currency: "USD"
