@@ -16,17 +16,17 @@ interface ScannerProps {
 }
 
 const SCAN_STATUS_MESSAGES = [
-  "LOCKED_SIGNAL: REFINING BOUNDARIES...",
-  "EXTRACTING HIGH-RES TEXTURE...",
-  "ISOLATING NAME_SECTOR...",
-  "NEURAL CHARACTER MATCHING...",
-  "QUERYING GLOBAL ARCHIVES...",
-  "RETRIEVING MARKET_VALUE..."
+  "ANALYZING_GEOMETRY...",
+  "SETTLING_COORDINATES...",
+  "SAMPLING_TEXT_PIXELS...",
+  "CROSS_REFERENCING_DB...",
+  "VERIFYING_HOLOGRAPHY...",
+  "ESTIMATING_VALUATION..."
 ];
 
 const TARGET_REGIONS = {
-  name: { x: '5%', y: '2%', w: '65%', h: '9%' },
-  number: { x: '2%', y: '88%', w: '40%', h: '10%' }
+  name: { x: 5, y: 2, w: 65, h: 9 },
+  number: { x: 2, y: 88, w: 40, h: 10 }
 };
 
 const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScanning }) => {
@@ -54,6 +54,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [freezeCountdown, setFreezeCountdown] = useState(50);
   const [statusIdx, setStatusIdx] = useState(0);
   
+  // States for "moving" boxes to simulate live tracking
+  const [jitter, setJitter] = useState({ x: 0, y: 0 });
+  const [nameBoxOffset, setNameBoxOffset] = useState({ x: 0, y: 0 });
+  const [idBoxOffset, setIdBoxOffset] = useState({ x: 0, y: 0 });
+
   const lastFoundTime = useRef<number>(0);
   const lastDeepScanTime = useRef<number>(0);
   const freezeStartTimeRef = useRef<number>(0);
@@ -163,7 +168,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   useEffect(() => {
     const lerp = (s: number, e: number, f: number) => s + (e - s) * f;
     const anim = () => {
-      // Keep lerping even when frozen to allow the "border adjustment" animation to finish smoothly on the still frame
       if (targetCorners) {
         setVisualCorners(p => p ? {
           tl: { x: lerp(p.tl.x, targetCorners.tl.x, 0.2), y: lerp(p.tl.y, targetCorners.tl.y, 0.2) },
@@ -176,11 +180,19 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         setVisualCorners(null);
         setShowWarped(false);
       }
+
+      // Continuous jitter for scanning look
+      if (isFrozen) {
+        setJitter({ x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 4 });
+        setNameBoxOffset({ x: (Math.random() - 0.5) * 1.5, y: (Math.random() - 0.5) * 1.5 });
+        setIdBoxOffset({ x: (Math.random() - 0.5) * 1.5, y: (Math.random() - 0.5) * 1.5 });
+      }
+
       animationFrameRef.current = requestAnimationFrame(anim);
     };
     animationFrameRef.current = requestAnimationFrame(anim);
     return () => animationFrameRef.current && cancelAnimationFrame(animationFrameRef.current);
-  }, [targetCorners]);
+  }, [targetCorners, isFrozen]);
 
   useEffect(() => {
     let timer: number;
@@ -188,7 +200,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (videoRef.current) videoRef.current.pause(); 
       timer = window.setInterval(() => {
         const elapsed = (Date.now() - freezeStartTimeRef.current) / 1000;
-        const maxTime = 50; // Standardize scanning lock to 50 seconds
+        const maxTime = 50; 
         const remaining = Math.max(0, maxTime - Math.floor(elapsed));
         setFreezeCountdown(remaining);
         
@@ -220,7 +232,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const ctx = c.getContext('2d', { alpha: false });
     if (!ctx) return;
 
-    // Drawing from either video element or Mat
     if (sourceOverride && sourceOverride.cols) {
        cv.imshow(c, sourceOverride);
     } else {
@@ -308,7 +319,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const processFrame = async () => {
     if (fileInputRef.current?.value) return;
 
-    // Use current corners even if adjusting
     const corners = targetCorners || lockedCornersRef.current;
     if (!corners || !cvReady || isProcessing) return;
     setIsProcessing(true);
@@ -350,7 +360,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     let int: number;
     if (isScanning && cvReady && !scanResult) {
       int = window.setInterval(() => { 
-        // If frozen, continue to adjust border based on the static high-res Mat
         if (isFrozen && frozenFrameRef.current) {
            detectCardWithCV(frozenFrameRef.current);
         } else if (!isFrozen) {
@@ -365,21 +374,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
-      {/* Visual Tracking Overlay (Raw perspective) */}
-      {!showWarped && visualCorners && viewBox.w > 0 && (
-         <div className="absolute inset-0 z-20 pointer-events-none">
-           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
-              <path 
-                d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`} 
-                className="fill-cyan-400/10 stroke-[6px] stroke-cyan-400 animate-pulse" 
-              />
-              {[visualCorners.tl, visualCorners.tr, visualCorners.bl, visualCorners.br].map((p, i) => (
-                <circle key={i} cx={p.x} cy={p.y} r="12" className="fill-white stroke-cyan-400 stroke-2" />
-              ))}
-           </svg>
-      </div>
-      )}
-
       <video 
         ref={videoRef} 
         autoPlay 
@@ -390,82 +384,105 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       <div className={`absolute inset-0 z-10 flex items-center justify-center transition-all duration-500 transform ${showWarped ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
           <div className="relative w-full h-full max-w-[90vw] max-h-[85vh] flex items-center justify-center">
             <div className="relative w-full h-full flex items-center justify-center group">
-              <canvas 
-                ref={cardCanvasRef} 
-                className={`w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.5)] border-4 rounded-3xl transition-all duration-500 ${isFrozen ? 'border-cyan-400 brightness-110' : 'border-white/20'}`}
-              />
+              <div 
+                className="relative w-full h-full flex items-center justify-center"
+                style={{ transform: `translate(${jitter.x}px, ${jitter.y}px)` }}
+              >
+                <canvas 
+                  ref={cardCanvasRef} 
+                  className={`w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.3)] border-4 rounded-3xl transition-all duration-150 ${isFrozen ? 'border-cyan-400 brightness-110' : 'border-white/20'}`}
+                />
+              </div>
               
-              {/* Telemetry Search Boxes (Visible when frozen) */}
+              {/* Live Telemetry Sector Boxes */}
               {isFrozen && (
                 <div className="absolute inset-0 pointer-events-none z-30">
                   <div className="relative w-full h-full flex items-center justify-center">
                     <div className="relative aspect-[400/560] h-full max-h-full">
-                      {/* Name Search Box */}
+                      
+                      {/* Name Detection Zone */}
                       <div 
-                        className="absolute border-2 border-cyan-400/80 bg-cyan-400/10 rounded shadow-[0_0_20px_rgba(34,211,238,0.6)] animate-pulse transition-all duration-300"
+                        className="absolute border-2 border-cyan-400 bg-cyan-400/10 rounded-sm shadow-[0_0_20px_rgba(34,211,238,0.5)] transition-all duration-75"
                         style={{ 
-                          left: TARGET_REGIONS.name.x, 
-                          top: TARGET_REGIONS.name.y, 
-                          width: TARGET_REGIONS.name.w, 
-                          height: TARGET_REGIONS.name.h 
+                          left: `${TARGET_REGIONS.name.x + nameBoxOffset.x}%`, 
+                          top: `${TARGET_REGIONS.name.y + nameBoxOffset.y}%`, 
+                          width: `${TARGET_REGIONS.name.w}%`, 
+                          height: `${TARGET_REGIONS.name.h}%` 
                         }}
                       >
-                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-2 py-0.5 -translate-y-full border border-cyan-400/30">NAME_SECTOR</div>
-                        <div className="absolute inset-0 flex items-center justify-center overflow-hidden">
-                           <div className="w-full h-[1px] bg-cyan-400/40 animate-scanline" />
+                        <div className="absolute top-0 left-0 text-[7px] font-orbitron font-black text-white bg-cyan-600 px-1.5 py-0.5 -translate-y-full flex items-center gap-1">
+                          <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
+                          SECTOR_NAME: ACTIVE
                         </div>
+                        {/* Internal Scanning Grid for the box */}
+                        <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.2)_1px,transparent_1px)] bg-[size:10px_10px]" />
                       </div>
 
-                      {/* Number Search Box */}
+                      {/* ID Detection Zone */}
                       <div 
-                        className="absolute border-2 border-cyan-400/80 bg-cyan-400/10 rounded shadow-[0_0_20px_rgba(34,211,238,0.6)] animate-pulse transition-all duration-300"
+                        className="absolute border-2 border-cyan-400 bg-cyan-400/10 rounded-sm shadow-[0_0_20px_rgba(34,211,238,0.5)] transition-all duration-75"
                         style={{ 
-                          left: TARGET_REGIONS.number.x, 
-                          top: TARGET_REGIONS.number.y, 
-                          width: TARGET_REGIONS.number.w, 
-                          height: TARGET_REGIONS.number.h 
+                          left: `${TARGET_REGIONS.number.x + idBoxOffset.x}%`, 
+                          top: `${TARGET_REGIONS.number.y + idBoxOffset.y}%`, 
+                          width: `${TARGET_REGIONS.number.w}%`, 
+                          height: `${TARGET_REGIONS.number.h}%` 
                         }}
                       >
-                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-2 py-0.5 -translate-y-full border border-cyan-400/30">ID_SECTOR</div>
-                        <div className="absolute inset-0 flex items-center justify-center overflow-hidden">
-                           <div className="w-full h-[1px] bg-cyan-400/40 animate-scanline" />
+                        <div className="absolute top-0 left-0 text-[7px] font-orbitron font-black text-white bg-cyan-600 px-1.5 py-0.5 -translate-y-full flex items-center gap-1">
+                          <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
+                          SECTOR_ID: SEARCHING
                         </div>
+                        <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.2)_1px,transparent_1px)] bg-[size:10px_10px]" />
                       </div>
 
-                      {/* Card Outline confirmation */}
-                      <div className="absolute inset-0 border-4 border-cyan-400 animate-pulse rounded-3xl opacity-40"></div>
-                      <div className="absolute -inset-4 border border-cyan-400/20 rounded-[2.5rem] pointer-events-none"></div>
+                      {/* Moving Coordinate Points on edges */}
+                      <div className="absolute -left-4 top-1/2 -translate-y-1/2 h-20 w-1 bg-cyan-400/50 flex flex-col items-center justify-between py-2">
+                        <div className="w-3 h-0.5 bg-cyan-400" />
+                        <div className="w-3 h-0.5 bg-cyan-400" />
+                      </div>
+                      <div className="absolute -right-4 top-1/2 -translate-y-1/2 h-20 w-1 bg-cyan-400/50 flex flex-col items-center justify-between py-2">
+                        <div className="w-3 h-0.5 bg-cyan-400" />
+                        <div className="w-3 h-0.5 bg-cyan-400" />
+                      </div>
+
+                      {/* Corner Sight Markers */}
+                      <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-cyan-400" />
+                      <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-cyan-400" />
+                      <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-cyan-400" />
+                      <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-cyan-400" />
                     </div>
                   </div>
                 </div>
               )}
-
-              {isFrozen && (
-                <div className="absolute inset-0 overflow-hidden rounded-3xl pointer-events-none z-20">
-                   <div className="absolute w-full h-[3px] bg-cyan-400 shadow-[0_0_20px_rgba(34,211,238,1)] animate-scanline-sweep" />
-                   <div className="absolute inset-0 bg-cyan-400/10" />
-                </div>
-              )}
             </div>
 
-            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/10 to-transparent h-24 w-full animate-scanline pointer-events-none" />
+            {/* Global Scanning Overlay */}
+            <div className="absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.05)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none opacity-50" />
             
             {isFrozen && (
-               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-slate-950/20 backdrop-blur-[1px] z-40">
-                  <div className="relative mb-8">
-                     <div className="w-24 h-24 border-4 border-cyan-400/20 rounded-full" />
-                     <div className="absolute inset-0 w-24 h-24 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-slate-950/40 backdrop-blur-[1px] z-40">
+                  <div className="relative mb-12">
+                     <div className="w-32 h-32 border-8 border-cyan-400/20 rounded-full" />
+                     <div className="absolute inset-0 w-32 h-32 border-8 border-cyan-400 border-t-transparent rounded-full animate-spin" />
                      <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-xl font-orbitron font-black text-cyan-400">{freezeCountdown}</span>
+                        <span className="text-3xl font-orbitron font-black text-white drop-shadow-[0_0_10px_rgba(34,211,238,1)]">{freezeCountdown}s</span>
                      </div>
                   </div>
                   
-                  <div className="bg-slate-900/90 border border-cyan-400/30 px-8 py-3 rounded-full flex flex-col items-center gap-1 shadow-2xl">
+                  <div className="bg-slate-900 border border-cyan-400/40 px-10 py-4 rounded-xl flex flex-col items-center gap-2 shadow-[0_0_50px_rgba(0,0,0,0.8)] border-b-4">
                      <div className="flex items-center gap-3">
-                        <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                        <span className="text-[10px] font-orbitron font-black text-white uppercase tracking-[0.2em] whitespace-nowrap">
+                        <div className="flex gap-1">
+                           {[...Array(3)].map((_, i) => (
+                              <div key={i} className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: `${i*0.2}s` }} />
+                           ))}
+                        </div>
+                        <span className="text-[12px] font-orbitron font-black text-white uppercase tracking-[0.2em] whitespace-nowrap">
                            {SCAN_STATUS_MESSAGES[statusIdx]}
                         </span>
+                     </div>
+                     <div className="w-full h-1 bg-slate-800 rounded-full mt-2 overflow-hidden">
+                        {/* Fix: Using (50 - freezeCountdown) to calculate elapsed percentage for the progress bar as 'elapsed' is not in scope here */}
+                        <div className="h-full bg-cyan-400 transition-all duration-500" style={{ width: `${((50 - freezeCountdown) / 50) * 100}%` }} />
                      </div>
                   </div>
                </div>
@@ -474,15 +491,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       </div>
 
       <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-4 duration-500">
-        <div className={`bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-full px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300 ${isFrozen ? 'border-cyan-400/50 ring-2 ring-cyan-400/20' : ''}`}>
+        <div className={`bg-slate-900/80 backdrop-blur-2xl border-2 border-white/10 rounded-full px-10 py-5 shadow-2xl flex items-center gap-6 transition-all duration-300 ${isFrozen ? 'border-cyan-400/50 ring-4 ring-cyan-400/10' : ''}`}>
           <div className="flex items-center gap-4">
-            <span className="text-xl font-orbitron font-black text-white uppercase tracking-tighter">
+            <span className="text-2xl font-orbitron font-black text-white uppercase tracking-tighter">
               {detectedData?.name || (isDeepScanning ? 'SEARCHING ARCHIVES...' : (isFrozen ? 'SIGNAL LOCKED' : 'AWAITING ASSET...'))}
             </span>
             {detectedData?.number && (
               <>
-                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.8)]" />
-                <span className="text-xl font-orbitron font-bold text-cyan-400">
+                <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,1)]" />
+                <span className="text-2xl font-orbitron font-bold text-cyan-400">
                   #{detectedData.number}
                 </span>
               </>
@@ -493,21 +510,21 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       {scanResult && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[60]">
-           <div className="bg-slate-900/95 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
-              <div className="w-20 h-20 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-6"><svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg></div>
-              <div className="text-4xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter">{scanResult.name}</div>
-              <div className="bg-cyan-500/20 text-cyan-400 py-2 px-8 rounded-full border border-cyan-500/30 inline-block font-orbitron font-black uppercase text-[10px] tracking-widest">SECURED</div>
+           <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-cyan-500/50 p-20 rounded-[4rem] shadow-[0_0_200px_rgba(34,211,238,0.4)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
+              <div className="w-24 h-24 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-8 shadow-[0_0_40px_rgba(34,211,238,0.6)]"><svg className="w-14 h-14 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg></div>
+              <div className="text-5xl font-orbitron font-black text-white mb-4 uppercase tracking-tighter">{scanResult.name}</div>
+              <div className="bg-cyan-500/20 text-cyan-400 py-3 px-12 rounded-full border border-cyan-500/40 inline-block font-orbitron font-black uppercase text-xs tracking-[0.3em]">SYNCHRONIZED</div>
            </div>
         </div>
       )}
 
-      <div className="absolute bottom-10 left-0 right-0 z-50 px-10 flex justify-between items-center pointer-events-none">
+      <div className="absolute bottom-12 left-0 right-0 z-50 px-12 flex justify-between items-center pointer-events-none">
         {!isFrozen && (
           <button 
             onClick={() => fileInputRef.current?.click()} 
-            className="pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 bg-slate-900/90 text-cyan-400 shadow-2xl transition-all active:scale-90 hover:bg-slate-800"
+            className="pointer-events-auto backdrop-blur-2xl p-7 rounded-3xl border border-white/10 bg-slate-900/90 text-cyan-400 shadow-[0_20px_50px_rgba(0,0,0,0.5)] transition-all active:scale-90 hover:bg-slate-800 hover:border-cyan-400/50"
           >
-            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
             </svg>
           </button>
@@ -516,9 +533,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         {torchSupported && !isFrozen && (
           <button 
             onClick={toggleTorch} 
-            className={`pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white shadow-[0_0_30px_rgba(251,191,36,0.4)]' : 'bg-slate-900/90 text-slate-400'}`}
+            className={`pointer-events-auto backdrop-blur-2xl p-7 rounded-3xl border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.5)] transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white shadow-[0_0_30px_rgba(251,191,36,0.5)]' : 'bg-slate-900/90 text-slate-400'}`}
           >
-            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </button>
