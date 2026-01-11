@@ -89,11 +89,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }
   };
 
-  /**
-   * GLARE MITIGATION ENGINE:
-   * Analyzes pixels to detect overexposed regions.
-   * Adjusts exposureCompensation dynamically to "dim" the glare without losing details.
-   */
   const adjustExposureForGlare = useCallback(async (ctx: CanvasRenderingContext2D, width: number, height: number) => {
     if (!stream || !isTorchOn || Date.now() - lastAdjustmentTime.current < 500) return;
 
@@ -171,9 +166,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }
   }, [isScanning]);
 
-  /**
-   * INTERPOLATION ENGINE: 60FPS Fluid Transition
-   */
   useEffect(() => {
     const lerp = (start: number, end: number, factor: number) => start + (end - start) * factor;
     
@@ -201,12 +193,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     };
   }, [targetCorners]);
 
-  /**
-   * REFINED COMPUTER VISION PIPELINE:
-   * Optimized for vibrant colors and bright lighting.
-   * Uses Edge Fusion (Canny + Adaptive Threshold) to ensure cards are detected 
-   * even when the background is busy or the colors blend.
-   */
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return; 
     
@@ -231,21 +217,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let cannyEdges = new cv.Mat();
       
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      
-      // Use Gaussian Blur for better edge preservation than Median in high-vibrancy scenes
       cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-      
-      // 1. Adaptive Thresholding (Detects local contrasts)
       cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
-      
-      // 2. Canny Edge Detection (Detects global structures)
-      // Standard TCG border detection ranges
       cv.Canny(blurred, cannyEdges, 75, 200);
-      
-      // 3. Edge Fusion: Combine both methods
       cv.bitwise_or(thresh, cannyEdges, thresh);
       
-      // 4. Stronger Morphology: Bridge gaps in borders caused by vibrant reflections
       let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
       cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, kernel);
       
@@ -260,7 +236,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
         
-        // Dynamic area threshold
         if (area > (canvas.width * canvas.height * 0.05)) {
           let approx = new cv.Mat();
           let peri = cv.arcLength(cnt, true);
@@ -289,7 +264,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const hLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
             const ratio = wTop / hLeft;
 
-            // Widen ratio acceptance for perspective distortions
             if (ratio > 0.5 && ratio < 1.0) {
               if (area > maxArea) {
                 maxArea = area;
@@ -348,45 +322,64 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }, 1500);
   };
 
+  /**
+   * PERSPECTIVE WARP PIPELINE:
+   * Transforms the skewed card image into a flat, normalized rectangle.
+   * This provides the OCR engine with perfectly aligned text regions.
+   */
+  const processNeuralCrop = async () => {
+    if (!targetCorners || !cvReady || !videoRef.current || !cardCanvasRef.current) return;
+
+    setIsProcessing(true);
+    const video = videoRef.current;
+    
+    try {
+      let src = cv.imread(video);
+      let dst = new cv.Mat();
+      let dsize = new cv.Size(400, 560); // Standard Card Ratio
+
+      let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+        targetCorners.tl.x, targetCorners.tl.y,
+        targetCorners.tr.x, targetCorners.tr.y,
+        targetCorners.br.x, targetCorners.br.y,
+        targetCorners.bl.x, targetCorners.bl.y
+      ]);
+
+      let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+        0, 0,
+        400, 0,
+        400, 560,
+        0, 560
+      ]);
+
+      let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
+      cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+      // Draw standard warped card to canvas for OCR
+      cv.imshow(cardCanvasRef.current, dst);
+
+      const result = await extractNameLocally(cardCanvasRef.current);
+      if (result && result.name && result.number) {
+        instantVault(result);
+      }
+
+      src.delete(); dst.delete(); M.delete(); srcCoords.delete(); dstCoords.delete();
+    } catch (e) {
+      console.warn("Neural Warp Failure");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   useEffect(() => {
     let interval: number;
     if (isScanning && cvReady && !scanResult) {
       interval = window.setInterval(async () => {
         detectCardWithCV();
-
         if (targetCorners && !isProcessing) {
-          setIsProcessing(true);
-          const video = videoRef.current!;
-          const cardCanvas = cardCanvasRef.current!;
-          const cCtx = cardCanvas.getContext('2d', { alpha: false });
-          
-          if (cCtx) {
-            const minX = Math.min(targetCorners.tl.x, targetCorners.tr.x, targetCorners.bl.x, targetCorners.br.x);
-            const maxX = Math.max(targetCorners.tl.x, targetCorners.tr.x, targetCorners.bl.x, targetCorners.br.x);
-            const minY = Math.min(targetCorners.tl.y, targetCorners.tr.y, targetCorners.bl.y, targetCorners.br.y);
-            const maxY = Math.max(targetCorners.tl.y, targetCorners.tr.y, targetCorners.bl.y, targetCorners.br.y);
-
-            const padding = 20; 
-            const cropX = Math.max(0, minX - padding);
-            const cropY = Math.max(0, minY - padding);
-            const cropW = Math.min(video.videoWidth - cropX, (maxX - minX) + (padding * 2));
-            const cropH = Math.min(video.videoHeight - cropY, (maxY - minY) + (padding * 2));
-
-            cardCanvas.width = cropW;
-            cardCanvas.height = cropH;
-            cCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-            
-            const result = await extractNameLocally(cardCanvas);
-            if (result) {
-              setDetectedData(result);
-              if (result.name && result.number) {
-                instantVault(result);
-              }
-            }
-          }
-          setIsProcessing(false);
+          processNeuralCrop();
         }
-      }, 62); 
+      }, 100); 
     }
     return () => clearInterval(interval);
   }, [isScanning, cvReady, targetCorners, isProcessing, scanResult]);
@@ -439,7 +432,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         )}
       </div>
 
-      {/* Torch Toggle Control */}
       {torchSupported && (
         <div className="absolute bottom-10 right-10 flex flex-col gap-4">
           <button 
