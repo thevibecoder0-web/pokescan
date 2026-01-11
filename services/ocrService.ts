@@ -7,6 +7,7 @@ export interface OCRResult {
   name: string;
   number: string | null;
   bbox: { x0: number; y0: number; x1: number; y1: number } | null;
+  strategyUsed: string;
 }
 
 const getLevenshteinDistance = (a: string, b: string): number => {
@@ -40,90 +41,82 @@ const initWorker = async () => {
 };
 
 /**
- * Optimized Hybrid OCR for Pokemon Cards
- * 1. Focuses on top 18% (Name)
- * 2. Focuses on bottom-left 35% width, 15% height (Card Number)
+ * Adaptive Multi-Region OCR
+ * Logic:
+ * 1. Check Top (Name) + Bottom Left (Number)
+ * 2. If no Number, check Bottom Right (Classic/Promos)
+ * 3. If still no Number, check the whole card for patterns
  */
-export const extractNameLocally = async (sourceCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
+export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     await initWorker();
-
-    const nameplateCanvas = document.createElement('canvas');
-    const ctx = nameplateCanvas.getContext('2d', { alpha: false });
+    const ctx = cardCanvas.getContext('2d');
     if (!ctx) return null;
 
-    const cropHeightName = Math.floor(sourceCanvas.height * 0.18);
-    const cropHeightNumber = Math.floor(sourceCanvas.height * 0.15);
-    const cropWidthName = sourceCanvas.width;
-    const cropWidthNumber = Math.floor(sourceCanvas.width * 0.35); // Focus on Bottom Left
-    
-    nameplateCanvas.width = Math.max(cropWidthName, cropWidthNumber);
-    nameplateCanvas.height = cropHeightName + cropHeightNumber;
+    const w = cardCanvas.width;
+    const h = cardCanvas.height;
 
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, nameplateCanvas.width, nameplateCanvas.height);
-    ctx.filter = 'grayscale(1) contrast(1.8) brightness(1.1)';
-    
-    // Draw Name Zone (Top Full Width)
-    ctx.drawImage(
-      sourceCanvas, 
-      0, 0, sourceCanvas.width, cropHeightName,
-      0, 0, cropWidthName, cropHeightName
-    );
+    const strategies = [
+      { name: "STANDARD_BOTTOM_LEFT", regions: [{ x: 0, y: 0, w, h: h * 0.2 }, { x: 0, y: h * 0.8, w: w * 0.45, h: h * 0.2 }] },
+      { name: "CLASSIC_BOTTOM_RIGHT", regions: [{ x: 0, y: 0, w, h: h * 0.2 }, { x: w * 0.55, y: h * 0.8, w: w * 0.45, h: h * 0.2 }] },
+      { name: "GLOBAL_RECOVERY", regions: [{ x: 0, y: 0, w, h }] }
+    ];
 
-    // Draw Number Zone (Bottom Left Corner)
-    ctx.drawImage(
-      sourceCanvas,
-      0, sourceCanvas.height - cropHeightNumber, cropWidthNumber, cropHeightNumber,
-      0, cropHeightName, cropWidthNumber, cropHeightNumber
-    );
+    for (const strategy of strategies) {
+      const scanCanvas = document.createElement('canvas');
+      const sCtx = scanCanvas.getContext('2d');
+      if (!sCtx) continue;
 
-    const { data } = await worker.recognize(nameplateCanvas);
-    
-    let detectedName: string | null = null;
-    let detectedNumber: string | null = null;
-    let nameBbox: any = null;
+      // Concatenate all regions in strategy into one vertical strip for OCR
+      const totalH = strategy.regions.reduce((acc, r) => acc + r.h, 0);
+      scanCanvas.width = w;
+      scanCanvas.height = totalH;
 
-    for (const word of data.words) {
-      const text = word.text.trim();
-      
-      // Improved Card Number Regex (captures formats like 123/191, 001/020, or even 123 in isolation)
-      if (!detectedNumber) {
-        // Regex for numbers like "123/191" or "001" or "SV036"
-        const numMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})|(\b\d{3}\b)/i);
-        if (numMatch) {
-          detectedNumber = numMatch[0];
-        }
+      let currentY = 0;
+      for (const r of strategy.regions) {
+        sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, currentY, r.w, r.h);
+        currentY += r.h;
       }
 
-      // Look for Pokemon Name
-      if (!detectedName) {
-        const cleanWord = text.replace(/[^a-zA-Z]/g, '');
-        if (cleanWord.length >= 3) {
-          for (const species of POKEMON_SPECIES) {
-            const dist = getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase());
-            const isMatch = (cleanWord.length <= 4 && dist === 0) || (cleanWord.length > 4 && dist <= 1);
-            if (isMatch) {
-              detectedName = species;
-              nameBbox = {
-                x0: word.bbox.x0,
-                y0: word.bbox.y0,
-                x1: word.bbox.x1,
-                y1: word.bbox.y1
-              };
-              break;
+      const { data } = await worker.recognize(scanCanvas);
+      
+      let detectedName: string | null = null;
+      let detectedNumber: string | null = null;
+      let nameBbox: any = null;
+
+      for (const word of data.words) {
+        const text = word.text.trim();
+        
+        // Pattern: XXX/XXX or XXXX or SXXX or TGXX
+        if (!detectedNumber) {
+          const numMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})|(\b\d{3,4}\b)/i);
+          if (numMatch) detectedNumber = numMatch[0];
+        }
+
+        if (!detectedName) {
+          const cleanWord = text.replace(/[^a-zA-Z]/g, '');
+          if (cleanWord.length >= 3) {
+            for (const species of POKEMON_SPECIES) {
+              const dist = getLevenshteinDistance(cleanWord, species);
+              if (dist <= (species.length > 5 ? 2 : 1)) {
+                detectedName = species;
+                nameBbox = word.bbox;
+                break;
+              }
             }
           }
         }
       }
-    }
-    
-    if (detectedName) {
-      return {
-        name: detectedName,
-        number: detectedNumber,
-        bbox: nameBbox
-      };
+
+      // If we found both or it's the global pass and we found at least the name, return
+      if ((detectedName && detectedNumber) || (strategy.name === "GLOBAL_RECOVERY" && detectedName)) {
+        return {
+          name: detectedName || "Unknown",
+          number: detectedNumber,
+          bbox: nameBbox,
+          strategyUsed: strategy.name
+        };
+      }
     }
     
     return null;
