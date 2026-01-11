@@ -3,19 +3,17 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
 const SYSTEM_INSTRUCTION = `You are the Neural Core of the PokéScan TCG Identification Unit.
-Your mission is to identify Pokémon cards from visual data.
+Your mission is to identify Pokémon cards from visual data INSTANTLY.
 
 RESILIENCE PROTOCOLS:
-1. NO FAILURES: Even in extreme conditions (blur, low light, glare), you must provide your absolute BEST GUESS based on colors, shapes, artwork, or partial text.
-2. VISUAL HEURISTICS: Use the card's frame (VMAX, GX, Tera, Gold, Silver), artwork style, and set symbol position to narrow down the identity.
-3. SEARCH GROUNDING: Use Google Search to verify the "TCGPlayer Market Price" and ensure the name/number/set combination is valid.
-4. PARTIAL DATA: If you can only see a piece of the name or just the artwork, search for that specific artwork to identify the card.
+1. NO FAILURES: Even in extreme conditions (blur, low light, glare), you must provide your absolute BEST GUESS.
+2. VISUAL HEURISTICS: Analyze the card frame, artwork style, and set symbol position.
+3. OUTPUT: Provide the card name and set number as primary targets. Retrieve current market value.
 
-OUTPUT FORMAT:
-- Return valid JSON. 
-- If you are absolutely unsure, describe the card in the 'name' field (e.g., "Blue Water Pokémon Artwork") so the user can see what you detected.`;
+OUTPUT FORMAT: Valid JSON only.`;
 
-const MODEL_NAME = 'gemini-3-pro-preview';
+const FLASH_MODEL = 'gemini-3-flash-preview';
+const PRO_MODEL = 'gemini-3-pro-preview';
 
 const getScannerConfig = () => ({
   systemInstruction: SYSTEM_INSTRUCTION,
@@ -24,15 +22,15 @@ const getScannerConfig = () => ({
   responseSchema: {
     type: Type.OBJECT,
     properties: {
-      name: { type: Type.STRING, description: "Official card name or best guess description." },
-      marketValue: { type: Type.STRING, description: "Current market value (e.g. $5.20). Use '$--.--' if unknown." },
-      set: { type: Type.STRING, description: "Card set name." },
-      number: { type: Type.STRING, description: "Set number (e.g. 123/191)." },
-      rarity: { type: Type.STRING, description: "Card rarity tier." },
-      hp: { type: Type.STRING, description: "Health points." },
-      type: { type: Type.STRING, description: "Pokemon type." }
+      name: { type: Type.STRING },
+      marketValue: { type: Type.STRING },
+      set: { type: Type.STRING },
+      number: { type: Type.STRING },
+      rarity: { type: Type.STRING },
+      hp: { type: Type.STRING },
+      type: { type: Type.STRING }
     },
-    required: ["name"], // Only name is absolutely required for a result
+    required: ["name"],
   },
 });
 
@@ -40,11 +38,11 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: MODEL_NAME,
+      model: FLASH_MODEL,
       contents: {
         parts: [
           { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          { text: "DEEP_IDENTIFY: Neural scan required. Use all available visual features to identify this card. If lighting is poor, analyze the distinctive shapes and colors of the artwork and border." },
+          { text: "IDENTIFY_ASSET: Rapid neural scan. Provide identity, set number, and market price." },
         ],
       },
       config: getScannerConfig() as any,
@@ -57,15 +55,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
     try {
       result = JSON.parse(response.text?.trim() || "{}");
     } catch (e) {
-      console.warn("Gemini returned invalid JSON. Attempting string recovery.");
-      // Simple fallback if JSON is broken but name exists in text
-      const text = response.text || "";
-      const nameMatch = text.match(/"name":\s*"([^"]+)"/);
-      if (nameMatch) {
-        result = { name: nameMatch[1] };
-      } else {
-        return null;
-      }
+      return null;
     }
     
     if (!result.name) return null;
@@ -84,7 +74,6 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       sourceUrl: sourceUrl
     } as IdentificationResult;
   } catch (error) {
-    console.error("Neural Identification Error:", error);
     return null;
   }
 };
@@ -93,8 +82,8 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: `Look up '${query}'. Provide TCG data and market value.`,
+      model: PRO_MODEL,
+      contents: `Look up '${query}'. Provide full TCG data and market value.`,
       config: {
         systemInstruction: "Expert TCG assistant. Return card data and market value in JSON format.",
         tools: [{ googleSearch: {} }],
@@ -109,19 +98,7 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
             number: { type: Type.STRING },
             hp: { type: Type.STRING },
             marketValue: { type: Type.STRING },
-            imageUrl: { type: Type.STRING },
-            abilities: { type: Type.ARRAY, items: { type: Type.STRING } },
-            attacks: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  damage: { type: Type.STRING },
-                  description: { type: Type.STRING }
-                }
-              }
-            }
+            imageUrl: { type: Type.STRING }
           },
           required: ["name", "set", "number"],
         }
@@ -140,7 +117,6 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
 
     return { ...result, sourceUrl };
   } catch (error) {
-    console.error("Manual Lookup Error:", error);
     return null;
   }
 };
@@ -149,10 +125,10 @@ export const fetchCardsFromSet = async (setName: string): Promise<Identification
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `List all cards in the Pokémon TCG set: ${setName}. Include their official name, card number, rarity, and type.`,
+      model: FLASH_MODEL,
+      contents: `List all cards in the Pokémon TCG set: ${setName}.`,
       config: {
-        systemInstruction: "You are a professional Pokémon TCG archivist. Provide accurate set listings in valid JSON format.",
+        systemInstruction: "Professional archivist. Provide set listings in valid JSON format.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
@@ -161,9 +137,7 @@ export const fetchCardsFromSet = async (setName: string): Promise<Identification
             properties: {
               name: { type: Type.STRING },
               number: { type: Type.STRING },
-              rarity: { type: Type.STRING },
-              type: { type: Type.STRING },
-              hp: { type: Type.STRING }
+              rarity: { type: Type.STRING }
             },
             required: ["name", "number"]
           }
@@ -182,11 +156,9 @@ export const fetchCardsFromSet = async (setName: string): Promise<Identification
         marketValue: "$--.--"
       }));
     } catch (e) {
-      console.warn("Could not parse set list from Gemini.");
       return null;
     }
   } catch (error) {
-    console.error("Fetch Set Archives Error:", error);
     return null;
   }
 };
