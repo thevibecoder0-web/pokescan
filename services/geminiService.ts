@@ -2,42 +2,38 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
-const SYSTEM_INSTRUCTION = `You are the core of a PokéScan High-Speed Asset Identification Unit.
-Your objective is to identify Pokémon cards from visual data and retrieve their current market value.
+const SYSTEM_INSTRUCTION = `You are the Neural Core of the PokéScan TCG Identification Unit.
+Your mission is to identify Pokémon cards from visual data and retrieve live market values.
 
-RELIABILITY PROTOCOLS:
-1. OVERALL VISUAL MATCHING: If the text is blurry, use the card's artwork, layout, colors, and set symbols to identify it. You have access to a vast internal database of all Pokémon cards.
-2. PRICE FETCHING: Use Google Search to find the latest "TCGPlayer Market Price" for the English version. 
-3. FALLBACK: Never return "Unknown" if there is a recognizable Pokémon on the card. Use your best estimation based on the visible features.
+ADAPTIVE CAPABILITIES:
+1. FUZZY RECOGNITION: If text is distorted or obscured, use the card's artwork, holo patterns, set symbols (bottom left/right), and layout to determine identity.
+2. SEARCH GROUNDING: Always use Google Search to verify the "TCGPlayer Market Price" for the English edition.
+3. ERROR RECOVERY: If a previous attempt failed, the user will notify you. In 'Recovery Mode', relax your certainty threshold and provide the most probable match based on visual evidence.
 
 OUTPUT FORMAT:
 - Return ONLY valid JSON.
-- name: Official English card name.
-- marketValue: Current price (e.g., "$15.00").
-- set: Official set name.
-- number: Collection number (e.g., "001/191").
-- rarity: Official rarity.`;
+- If completely unrecognizable, return {"name": "DEEP_SCAN_REQUIRED", "marketValue": "---"}.`;
 
 const MODEL_NAME = 'gemini-3-flash-preview';
 
-const getScannerConfig = () => ({
-  systemInstruction: SYSTEM_INSTRUCTION,
+const getScannerConfig = (isRetry: boolean) => ({
+  systemInstruction: SYSTEM_INSTRUCTION + (isRetry ? "\n[RECOVERY MODE ACTIVE: Prioritize artwork and set symbols over text.]" : ""),
   tools: [{ googleSearch: {} }],
   responseMimeType: "application/json",
   responseSchema: {
     type: Type.OBJECT,
     properties: {
-      name: { type: Type.STRING, description: "Official name of the card." },
-      marketValue: { type: Type.STRING, description: "Market value string." },
-      set: { type: Type.STRING, description: "The expansion set name." },
-      number: { type: Type.STRING, description: "The card number in set." },
-      rarity: { type: Type.STRING, description: "Card rarity." }
+      name: { type: Type.STRING, description: "Official card name." },
+      marketValue: { type: Type.STRING, description: "Current market value (e.g. $5.20)." },
+      set: { type: Type.STRING, description: "Card set name." },
+      number: { type: Type.STRING, description: "Set number (e.g. 123/191)." },
+      rarity: { type: Type.STRING, description: "Card rarity tier." }
     },
     required: ["name", "marketValue"],
   },
 });
 
-export const identifyPokemonCard = async (base64Image: string): Promise<IdentificationResult | null> => {
+export const identifyPokemonCard = async (base64Image: string, isRetry: boolean = false): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
@@ -46,25 +42,28 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
         {
           parts: [
             { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-            { text: "IDENTIFY_ASSET: Scan this image for a Pokémon card. Extract identity and market price via search." },
+            { text: isRetry 
+                ? "RECOVERY_SCAN: Previous attempt failed. Identify this asset using all visual cues (art, symbols)." 
+                : "IDENTIFY_ASSET: Extract name and search live market price." 
+            },
           ],
         },
       ],
-      config: getScannerConfig() as any,
+      config: getScannerConfig(isRetry) as any,
     });
     
     const text = response.text || "{}";
     const result = JSON.parse(text);
     
-    // Safety check to avoid "Unknown Asset" appearing to the user
-    if (!result.name || result.name.toLowerCase().includes("unknown") || result.name.toLowerCase().includes("asset")) {
+    // Check if the AI returned a valid identity or the failure flag
+    if (!result.name || result.name === "DEEP_SCAN_REQUIRED") {
         return null;
     }
 
     return {
       name: result.name,
       marketValue: result.marketValue || "$--.--",
-      set: result.set || "Unknown Set",
+      set: result.set || "Unknown",
       rarity: result.rarity || "Common",
       type: "Unknown",
       number: result.number || "???",
@@ -74,7 +73,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       imageUrl: ""
     } as IdentificationResult;
   } catch (error) {
-    console.error("Critical Identification Error:", error);
+    console.error("Neural Identification Error:", error);
     return null;
   }
 };
@@ -84,9 +83,9 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: `Look up the card '${query}'. Provide official TCG data and current market value.`,
+      contents: `Look up '${query}'. Provide TCG data and market value.`,
       config: {
-        systemInstruction: "Expert TCG assistant. Provide official card data and current market value.",
+        systemInstruction: "Expert TCG assistant. Provide card data and market value.",
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
         responseSchema: {
@@ -132,7 +131,7 @@ export const fetchCardsFromSet = async (setName: string): Promise<Partial<Identi
       model: MODEL_NAME,
       contents: `List cards from the Pokémon TCG set "${setName}".`,
       config: {
-        systemInstruction: "Return a list of cards from the requested set in English with market prices.",
+        systemInstruction: "Return set list with names, numbers, and market prices.",
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
         responseSchema: {
