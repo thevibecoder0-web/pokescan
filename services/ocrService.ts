@@ -7,7 +7,8 @@ let isInitializing = false;
 export interface OCRResult {
   name: string;
   number: string;
-  strategyUsed: string;
+  fullText: string;
+  confidence: number;
 }
 
 // Low-level helper for fuzzy matching
@@ -32,7 +33,11 @@ const getLevenshteinDistance = (a: string, b: string): number => {
 };
 
 const POKEMON_SPECIES = [
-  "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise", "Pikachu", "Raichu", "Eevee", "Vaporeon", "Jolteon", "Flareon", "Mewtwo", "Mew", "Lugia", "Ho-Oh", "Rayquaza", "Kyogre", "Groudon", "Lucario", "Greninja", "Mimikyu", "Eternatus", "Zacian", "Zamazenta", "Koraidon", "Miraidon", "Terapagos", "Milotic", "Gengar", "Dragonite", "Arcanine", "Lapras", "Snorlax", "Ditto", "Gardevoir", "Sylveon", "Umbreon", "Espeon"
+  "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise", 
+  "Pikachu", "Raichu", "Eevee", "Vaporeon", "Jolteon", "Flareon", "Mewtwo", "Mew", "Lugia", "Ho-Oh", 
+  "Rayquaza", "Kyogre", "Groudon", "Lucario", "Greninja", "Mimikyu", "Eternatus", "Zacian", "Zamazenta", 
+  "Koraidon", "Miraidon", "Terapagos", "Milotic", "Gengar", "Dragonite", "Arcanine", "Lapras", "Snorlax", 
+  "Ditto", "Gardevoir", "Sylveon", "Umbreon", "Espeon", "Tyranitar", "Scizor", "Alakazam", "Machamp"
 ];
 
 export const initOCRWorker = async () => {
@@ -40,6 +45,10 @@ export const initOCRWorker = async () => {
   isInitializing = true;
   try {
     worker = await createWorker('eng');
+    await worker.setParameters({
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -!',
+      tessedit_pageseg_mode: '1', // Automatic page segmentation with OSD.
+    });
   } catch (err) {
     console.error("Worker Initialization Failed", err);
   } finally {
@@ -52,96 +61,68 @@ const cleanText = (text: string) => {
 };
 
 /**
- * Enhanced OCR extractor that processes name and number regions separately with specialized filters.
+ * Global Card OCR: Scans the entire card for any and all text.
  */
-export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
+export const extractAllCardText = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     if (!worker) await initOCRWorker();
     
-    const w = cardCanvas.width;
-    const h = cardCanvas.height;
+    // Pre-processing: Scale up for better accuracy
+    const offscreen = document.createElement('canvas');
+    offscreen.width = cardCanvas.width * 2;
+    offscreen.height = cardCanvas.height * 2;
+    const ctx = offscreen.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(cardCanvas, 0, 0, offscreen.width, offscreen.height);
+    
+    // Thresholding for text clarity
+    const imgData = ctx.getImageData(0, 0, offscreen.width, offscreen.height);
+    const data = imgData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      const val = avg > 120 ? 255 : 0; // High contrast
+      data[i] = data[i + 1] = data[i + 2] = val;
+    }
+    ctx.putImageData(imgData, 0, 0);
 
-    // Defined sectors on the warped 400x560 canvas
-    const nameRegion = { x: w * 0.05, y: h * 0.02, w: w * 0.70, h: h * 0.09 };
-    const numRegion = { x: w * 0.02, y: h * 0.88, w: w * 0.40, h: h * 0.10 };
+    const { data: { text, confidence } } = await worker.recognize(offscreen);
+    const fullText = cleanText(text);
+    
+    if (!fullText || fullText.length < 3) return null;
 
-    const getSegmentText = async (region: {x: number, y: number, w: number, h: number}, whitelist: string) => {
-      const segCanvas = document.createElement('canvas');
-      segCanvas.width = region.w * 3; // Upscale significantly for Tesseract
-      segCanvas.height = region.h * 3;
-      const ctx = segCanvas.getContext('2d', { willReadFrequently: true });
-      if (!ctx) return "";
-      
-      // Draw and upscale segment
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(cardCanvas, region.x, region.y, region.w, region.h, 0, 0, segCanvas.width, segCanvas.height);
-      
-      // High-contrast binarization filter
-      const imgData = ctx.getImageData(0, 0, segCanvas.width, segCanvas.height);
-      const data = imgData.data;
-      for (let i = 0; i < data.length; i += 4) {
-        const grayscale = data[i] * 0.3 + data[i + 1] * 0.59 + data[i + 2] * 0.11;
-        const threshold = 130; 
-        const val = grayscale > threshold ? 255 : 0;
-        data[i] = data[i + 1] = data[i + 2] = val;
-      }
-      ctx.putImageData(imgData, 0, 0);
-
-      await worker.setParameters({
-        tessedit_char_whitelist: whitelist,
-        tessedit_pageseg_mode: '7', // Single line
-      });
-
-      const { data: { text } } = await worker.recognize(segCanvas);
-      return cleanText(text);
-    };
-
-    // Run OCR on segments
-    const rawName = await getSegmentText(nameRegion, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -');
-    const rawNum = await getSegmentText(numRegion, '0123456789/ ABCDEFGHIJKLMNOPQRSTUVWXYZ');
-
-    if (!rawName && !rawNum) return null;
-
+    // Greedy Name Identification
     let detectedName = "";
-    // Fuzzy matching for name
-    const words = rawName.split(' ');
+    const words = fullText.split(' ');
     for (const word of words) {
       const cleanWord = word.replace(/[^a-zA-Z]/g, '');
       if (cleanWord.length < 3) continue;
       
-      const exact = POKEMON_SPECIES.find(s => s.toLowerCase() === cleanWord.toLowerCase());
-      if (exact) {
-        detectedName = exact;
-        break;
-      }
+      const match = POKEMON_SPECIES.find(s => 
+        s.toLowerCase() === cleanWord.toLowerCase() || 
+        getLevenshteinDistance(cleanWord.toLowerCase(), s.toLowerCase()) <= 1
+      );
       
-      const fuzzy = POKEMON_SPECIES.find(species => getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase()) <= 1);
-      if (fuzzy) {
-        detectedName = fuzzy;
+      if (match) {
+        detectedName = match;
         break;
       }
     }
 
-    if (!detectedName && rawName.length > 2) {
-      detectedName = rawName.replace(/[^a-zA-Z]/g, '');
-    }
+    // Attempt Number Extraction (e.g., 001/191)
+    const numMatch = fullText.match(/(\d{1,3}\/\d{1,3})/);
+    const detectedNumber = numMatch ? numMatch[0] : "???";
 
-    // Clean up number (looking for 001/191 or similar)
-    const numMatch = rawNum.match(/(\d{1,3}\/\d{1,3})|([A-Z0-9]{2,5}\s?\d{1,3})/i);
-    const detectedNumber = numMatch ? numMatch[0] : (rawNum.length > 0 ? rawNum : "???");
-
-    if (detectedName.length > 2 || detectedNumber !== "???") {
-      return {
-        name: detectedName || "Unknown Asset",
-        number: detectedNumber,
-        strategyUsed: "TESSERACT_SEGMENT_ANALYSIS"
-      };
-    }
-    
-    return null;
+    return {
+      name: detectedName || "Scanning Asset...",
+      number: detectedNumber,
+      fullText: fullText,
+      confidence: confidence
+    };
   } catch (error) {
-    console.error("OCR Local Error", error);
+    console.error("Global OCR Error", error);
     return null;
   }
 };
