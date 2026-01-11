@@ -1,26 +1,32 @@
 
 import { SURGING_SPARKS_DATA } from '../data/surgingSparks';
-import { IdentificationResult, PokemonCard } from '../types';
+import { IdentificationResult } from '../types';
 
 /**
- * Attempt to match OCR results to the local database of cards.
- * This works 100% offline and has no API limits.
+ * Intelligent local matching engine.
+ * Prioritizes card number (e.g. "036/191") as it's the unique identifier.
+ * Falls back to name fuzzy matching if number is not detected.
  */
 export const matchToLocalDatabase = (name: string, number: string): IdentificationResult | null => {
   if (!name && !number) return null;
 
-  // Search in preloaded sets (currently Surging Sparks)
-  const match = SURGING_SPARKS_DATA.find(card => {
-    const nameMatch = name && card.name.toLowerCase().includes(name.toLowerCase());
-    const numberMatch = number && card.number.includes(number);
-    
-    // If we have a number match, it's very likely the correct card
-    if (numberMatch) return true;
-    // If we only have name, it's a guess but helpful
-    if (nameMatch && !number) return true;
-    
-    return false;
-  });
+  const normalizedName = name.toLowerCase().trim();
+  const normalizedNumber = number.replace(/\s/g, ''); // Remove spaces from "036 / 191"
 
-  return match || null;
+  // 1. Try exact number match (High Confidence)
+  if (normalizedNumber) {
+    const numberMatch = SURGING_SPARKS_DATA.find(card => card.number === normalizedNumber);
+    if (numberMatch) return numberMatch;
+  }
+
+  // 2. Try Name Match (Medium Confidence)
+  if (normalizedName) {
+    const nameMatch = SURGING_SPARKS_DATA.find(card => 
+      card.name.toLowerCase().includes(normalizedName) ||
+      normalizedName.includes(card.name.toLowerCase())
+    );
+    if (nameMatch) return nameMatch;
+  }
+
+  return null;
 };

@@ -40,7 +40,8 @@ const POKEMON_SPECIES = [
   "Exeggutor", "Hoothoot", "Noctowl", "Shroomish", "Breloom", "Budew", "Roselia", "Roserade",
   "Cottonee", "Whimsicott", "Petilil", "Lilligant", "Maractus", "Deerling", "Sawsbuck", "Grubbin",
   "Charjabug", "Vikavolt", "Dwebble", "Crustle", "Morelull", "Shiinotic", "Zarude", "Scovillain",
-  "Ponyta", "Rapidash", "Moltres", "Victini", "Larvesta", "Volcarona", "Charcadet", "Ceruledge"
+  "Ponyta", "Rapidash", "Moltres", "Victini", "Larvesta", "Volcarona", "Charcadet", "Ceruledge",
+  "Dialga", "Palkia", "Giratina", "Arceus", "Eternatus", "Urshifu", "Calyrex", "Enamorus"
 ];
 
 export const initOCRWorker = async () => {
@@ -49,14 +50,18 @@ export const initOCRWorker = async () => {
 
   initPromise = (async () => {
     try {
-      worker = await createWorker('eng');
+      worker = await createWorker('eng', 1, {
+        logger: () => {}, // Disable logging for max performance
+      });
       await worker.setParameters({
         tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -!',
-        tessedit_pageseg_mode: '3', 
+        tessedit_pageseg_mode: '3', // Auto segmentation
+        tessjs_create_hocr: '0',
+        tessjs_create_tsv: '0',
       });
     } catch (err) {
       console.error("OCR Worker Init Failed", err);
-      initPromise = null; // Reset promise so we can try again
+      initPromise = null;
       throw err;
     }
   })();
@@ -65,45 +70,48 @@ export const initOCRWorker = async () => {
 };
 
 const cleanText = (text: string) => {
-  return text.trim().replace(/[\n\r]/g, ' ').replace(/\s+/g, ' ');
+  return text.trim().replace(/[^a-zA-Z0-9/ ]/g, '').replace(/\s+/g, ' ');
 };
 
+/**
+ * Optimized OCR process that looks specifically for the card name and set number
+ */
 export const extractCardTextLocally = async (imageCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
-    // Ensure initialization is complete and worker is assigned
     await initOCRWorker();
-    
-    if (!worker) {
-        throw new Error("OCR worker is not available after initialization.");
-    }
+    if (!worker) return null;
 
+    // Use a high-contrast version of the canvas
     const { data: { text, confidence } } = await worker.recognize(imageCanvas);
     const fullText = cleanText(text);
     
-    if (!fullText || fullText.length < 3) return null;
+    if (!fullText || fullText.length < 2) return null;
 
     let detectedName = "";
+    let detectedNumber = "";
+
+    // 1. Precise Number Extraction (e.g. 123/191)
+    const numMatch = fullText.match(/(\d{1,3})\s?\/\s?(\d{1,3})/);
+    if (numMatch) {
+        detectedNumber = `${numMatch[1]}/${numMatch[2]}`;
+    }
+
+    // 2. Fuzzy Name Extraction
     const words = fullText.split(' ');
-    
-    // Look for Pokemon names
     for (const word of words) {
-      const cleanWord = word.replace(/[^a-zA-Z]/g, '');
-      if (cleanWord.length < 3) continue;
+      if (word.length < 3) continue;
+      const cleanWord = word.replace(/[^a-zA-Z]/g, '').toLowerCase();
       
-      const match = POKEMON_SPECIES.find(s => 
-        cleanWord.toLowerCase().includes(s.toLowerCase()) || 
-        getLevenshteinDistance(cleanWord.toLowerCase(), s.toLowerCase()) <= 1
-      );
+      const match = POKEMON_SPECIES.find(s => {
+        const species = s.toLowerCase();
+        return cleanWord.includes(species) || species.includes(cleanWord) || getLevenshteinDistance(cleanWord, species) <= 1;
+      });
       
       if (match) {
         detectedName = match;
         break;
       }
     }
-
-    // Look for numbers like 036/191 or 123/191
-    const numMatch = fullText.match(/(\d{1,3})\/(\d{1,3})/);
-    const detectedNumber = numMatch ? numMatch[0] : "";
 
     return {
       name: detectedName,
@@ -112,7 +120,7 @@ export const extractCardTextLocally = async (imageCanvas: HTMLCanvasElement): Pr
       confidence: confidence
     };
   } catch (error) {
-    console.error("Local OCR Error", error);
+    console.error("Local OCR Error:", error);
     return null;
   }
 };
