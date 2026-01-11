@@ -20,7 +20,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [scanResult, setScanResult] = useState<{name: string, price: string} | null>(null);
   const [flash, setFlash] = useState(false);
   const [isProcessingLocal, setIsProcessingLocal] = useState(false);
-  const [lockConfidence, setLockConfidence] = useState(0);
 
   const startCamera = async () => {
     try {
@@ -56,51 +55,38 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return () => stopCamera();
   }, [isScanning]);
 
-  /**
-   * HIGH ACCURACY SCANNING LOOP
-   * Runs as fast as the device allows. It builds a "Lock Confidence"
-   * based on the temporal voting system in the OCR service.
-   */
+  // BACKGROUND CONTINUOUS SCANNING LOOP
   useEffect(() => {
-    let animationFrame: number;
-    const processFrame = async () => {
-      if (!isScanning || loading || !videoRef.current || !canvasRef.current || isProcessingLocal) {
-        animationFrame = requestAnimationFrame(processFrame);
-        return;
-      }
+    let interval: number;
+    if (isScanning && !loading) {
+      interval = window.setInterval(async () => {
+        if (!videoRef.current || !canvasRef.current || isProcessingLocal || loading) return;
 
-      setIsProcessingLocal(true);
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const context = canvas.getContext('2d', { alpha: false });
+        setIsProcessingLocal(true);
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d', { alpha: false });
 
-      if (context && video.videoWidth > 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        try {
-          const name = await extractNameLocally(canvas);
-          if (name) {
-            setLiveDetectedName(name);
-            setLockConfidence(prev => Math.min(prev + 34, 100)); // ~3 frames to hit 100%
-          } else if (lockConfidence > 0) {
-             setLockConfidence(prev => Math.max(prev - 5, 0)); // Slow decay if name lost
+        if (context && video.videoWidth > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          
+          try {
+            const name = await extractNameLocally(canvas);
+            if (name) {
+              setLiveDetectedName(name);
+            }
+          } catch (e) {
+            console.warn("OCR Tick Offline");
           }
-        } catch (e) {
-          console.warn("Frame Scan Dropped");
         }
-      }
-      setIsProcessingLocal(false);
-      animationFrame = requestAnimationFrame(processFrame);
-    };
-
-    if (isScanning) {
-      animationFrame = requestAnimationFrame(processFrame);
+        setIsProcessingLocal(false);
+      }, 1000); 
     }
 
-    return () => cancelAnimationFrame(animationFrame);
-  }, [isScanning, loading, isProcessingLocal, lockConfidence]);
+    return () => clearInterval(interval);
+  }, [isScanning, loading, isProcessingLocal]);
 
   const handleCaptureAndBind = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current || loading) return;
@@ -120,7 +106,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       
       const fullImageBase64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
       
-      // Attempt Deep Scan with AI
       const result = await identifyPokemonCard(fullImageBase64, false);
 
       if (result && result.name) {
@@ -131,31 +116,28 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           scanDate: new Date().toLocaleDateString(),
           imageUrl: result.imageUrl || `https://placehold.co/400x560/1e293b/white?text=${encodeURIComponent(result.name)}`
         });
-        setLockConfidence(0);
         setTimeout(() => setScanResult(null), 2500);
-      } else if (liveDetectedName && lockConfidence > 50) {
-        // High-Confidence Local Fallback
+      } else if (liveDetectedName) {
         onCardDetected({
           id: Math.random().toString(36).substr(2, 9),
           name: liveDetectedName,
           marketValue: "$--.--",
-          set: "Manual Scan",
-          rarity: "Standard",
-          type: "Asset",
-          number: "---",
+          set: "Local Scan",
+          rarity: "Common",
+          type: "Unknown",
+          number: "???",
           scanDate: new Date().toLocaleDateString(),
           imageUrl: `https://placehold.co/400x560/1e293b/white?text=${encodeURIComponent(liveDetectedName)}`
         });
         setScanResult({ name: liveDetectedName, price: "N/A" });
-        setLockConfidence(0);
         setTimeout(() => setScanResult(null), 2500);
       } else {
-        setError("NEURAL_SYNC_FAILED");
+        setError("NEURAL_LINK_ERROR");
         setTimeout(() => setError(null), 3000);
       }
     }
     setLoading(false);
-  }, [loading, onCardDetected, liveDetectedName, lockConfidence]);
+  }, [loading, onCardDetected, liveDetectedName]);
 
   return (
     <div 
@@ -178,23 +160,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       {/* Simplified HUD Overlay */}
       <div className="relative z-10 w-full h-full flex flex-col items-center pointer-events-none p-6">
           
-          {/* ALWAYS VISIBLE NAME BOX - Positioned 4/5ths up from bottom (Top offset adjusted) */}
+          {/* ALWAYS VISIBLE NAME BOX - Raised by height offset */}
           <div className="absolute top-[18%] -translate-y-full w-full max-w-sm px-6 transition-transform duration-500">
-            <div className="bg-slate-950/80 backdrop-blur-3xl border border-white/10 px-8 py-5 rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-center border-t-2 border-white/5 relative overflow-hidden">
-                {/* Lock Progress Bar */}
-                <div 
-                    className="absolute bottom-0 left-0 h-1 bg-cyan-500 shadow-[0_0_10px_rgba(34,211,238,1)] transition-all duration-300" 
-                    style={{ width: `${lockConfidence}%` }} 
-                />
-
+            <div className="bg-slate-950/80 backdrop-blur-3xl border border-white/10 px-8 py-5 rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-center border-t-2 border-white/5">
                 <span className="text-xl sm:text-2xl font-orbitron font-black text-white tracking-tighter block truncate">
-                    {loading ? "PARSING ARCHIVES..." : (liveDetectedName || "LOCATING ASSET")}
+                    {loading ? "SCANNING DATA..." : (liveDetectedName || "AWAITING TARGET")}
                 </span>
                 
                 <div className="mt-2 flex items-center justify-center gap-2">
-                  <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${lockConfidence >= 100 ? 'bg-cyan-400 animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.8)]' : 'bg-slate-700'}`}></div>
-                  <span className={`text-[8px] font-orbitron font-black tracking-[0.4em] uppercase transition-colors duration-300 ${lockConfidence >= 100 ? 'text-cyan-400' : 'text-slate-500'}`}>
-                    {loading ? 'Decrypting' : lockConfidence >= 100 ? 'NEURAL LOCK CONFIRMED' : 'SYNCING MATRIX...'}
+                  <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${liveDetectedName || loading ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'}`}></div>
+                  <span className={`text-[8px] font-orbitron font-black tracking-[0.4em] uppercase transition-colors duration-300 ${liveDetectedName || loading ? 'text-cyan-400' : 'text-slate-500'}`}>
+                    {loading ? 'Processing' : liveDetectedName ? 'Locked' : 'System Ready'}
                   </span>
                 </div>
             </div>
@@ -202,7 +178,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
           {/* Bottom Prompt - Fades out when card is locked */}
           <div className={`absolute bottom-12 transition-opacity duration-700 ${!liveDetectedName && !loading ? 'opacity-30' : 'opacity-0'}`}>
-             <span className="text-[10px] font-orbitron font-black text-white tracking-[0.6em] uppercase">Tap to Capture Verified Name</span>
+             <span className="text-[10px] font-orbitron font-black text-white tracking-[0.6em] uppercase">Tap anywhere to sync</span>
           </div>
 
           {/* Success Result Overlay */}

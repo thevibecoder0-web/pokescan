@@ -36,22 +36,22 @@ const getScannerConfig = (isRetry: boolean) => ({
 export const identifyPokemonCard = async (base64Image: string, isRetry: boolean = false): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    // --- FIX: Use single Content object with parts for generateContent ---
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: [
-        {
-          parts: [
-            { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-            { text: isRetry 
-                ? "RECOVERY_SCAN: Previous attempt failed. Identify this asset using all visual cues (art, symbols)." 
-                : "IDENTIFY_ASSET: Extract name and search live market price." 
-            },
-          ],
-        },
-      ],
+      contents: {
+        parts: [
+          { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+          { text: isRetry 
+              ? "RECOVERY_SCAN: Previous attempt failed. Identify this asset using all visual cues (art, symbols)." 
+              : "IDENTIFY_ASSET: Extract name and search live market price." 
+          },
+        ],
+      },
       config: getScannerConfig(isRetry) as any,
     });
     
+    // --- FIX: Access text property directly (it is a getter, not a method) ---
     const text = response.text || "{}";
     const result = JSON.parse(text);
     
@@ -116,6 +116,7 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
         }
       } as any,
     });
+    // --- FIX: Access text property directly ---
     const result = JSON.parse(response.text || "{}") as IdentificationResult;
     return { ...result };
   } catch (error) {
@@ -152,6 +153,7 @@ export const fetchCardsFromSet = async (setName: string): Promise<Partial<Identi
         }
       } as any,
     });
+    // --- FIX: Access text property directly ---
     return JSON.parse(response.text || "[]");
   } catch (error) {
     console.error("Fetch Set Cards Error:", error);
