@@ -85,17 +85,39 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }
   };
 
+  /**
+   * REFINED TORCH LOGIC:
+   * Instead of just toggling the LED, we also attempt to adjust exposure compensation.
+   * By lowering the exposure when the torch is on, we prevent the "light shining off the card" (glare blowout)
+   * while still benefiting from the increased illumination in the room.
+   */
   const toggleTorch = async () => {
     if (!stream || !torchSupported) return;
     const track = stream.getVideoTracks()[0];
+    const capabilities = (track as any).getCapabilities?.() || {};
+    
     try {
       const newTorchState = !isTorchOn;
+      
+      const advancedConstraints: any = { torch: newTorchState };
+      
+      // If torch is being turned ON, attempt to reduce exposure compensation to mitigate glare
+      if (newTorchState && capabilities.exposureCompensation) {
+        // Apply a negative compensation (e.g., -1.5 or the minimum supported)
+        const minComp = capabilities.exposureCompensation.min || -2.0;
+        advancedConstraints.exposureCompensation = Math.max(minComp, -1.5);
+      } else if (!newTorchState && capabilities.exposureCompensation) {
+        // Reset exposure to neutral when torch is OFF
+        advancedConstraints.exposureCompensation = 0;
+      }
+
       await track.applyConstraints({
-        advanced: [{ torch: newTorchState }]
+        advanced: [advancedConstraints]
       } as any);
+      
       setIsTorchOn(newTorchState);
     } catch (e) {
-      console.error("Failed to toggle torch", e);
+      console.error("Neural Light Control Failure:", e);
     }
   };
 
@@ -356,19 +378,20 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         <div className="absolute bottom-10 right-10 flex flex-col gap-4">
           <button 
               onClick={toggleTorch}
-              className={`pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group ${isTorchOn ? 'bg-amber-500/90 text-white' : 'bg-slate-900/90 text-slate-400'}`}
-              title={isTorchOn ? "Flash: ON" : "Flash: OFF"}
+              className={`pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group ${isTorchOn ? 'bg-amber-400 text-white' : 'bg-slate-900/90 text-slate-400'}`}
+              title={isTorchOn ? "Neural Light: ACTIVE (Low Exposure)" : "Neural Light: OFF"}
           >
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  {isTorchOn ? (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  ) : (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11.414 13.414 13 15l-1.586-1.586zM13 10V3L4 14h7v7l9-11h-7z" />
-                  )}
+              <svg className={`w-8 h-8 transition-transform ${isTorchOn ? 'scale-110' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
                   {!isTorchOn && (
-                    <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="2.5" />
+                    <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" strokeWidth="2.5" />
                   )}
               </svg>
+              {isTorchOn && (
+                <div className="absolute -top-2 -right-2 w-6 h-6 bg-cyan-400 rounded-full flex items-center justify-center animate-pulse border-2 border-slate-900">
+                    <span className="text-[8px] font-black text-slate-900">SOFT</span>
+                </div>
+              )}
           </button>
         </div>
       )}
