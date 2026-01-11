@@ -27,8 +27,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { 
           facingMode: 'environment', 
-          width: { ideal: 1920 }, 
-          height: { ideal: 1080 } 
+          width: { ideal: 1280 }, // 720p is often faster for real-time OCR than 1080p
+          height: { ideal: 720 } 
         },
         audio: false,
       });
@@ -55,7 +55,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return () => stopCamera();
   }, [isScanning]);
 
-  // CONTINUOUS OCR LOOP
+  // HIGH PERFORMANCE CONTINUOUS OCR LOOP
   useEffect(() => {
     let interval: number;
     if (isScanning && !loading) {
@@ -68,11 +68,16 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         const context = canvas.getContext('2d', { alpha: false });
 
         if (context && video.videoWidth > 0) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
+          // Sync canvas size with video
+          if (canvas.width !== video.videoWidth) {
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+          }
+          
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
           
           try {
+            // New optimized ROI-based extraction
             const result = await extractNameLocally(canvas);
             setDetectedData(result);
           } catch (e) {
@@ -80,7 +85,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
         }
         setIsProcessingLocal(false);
-      }, 500); 
+      }, 300); // Increased frequency due to ROI performance gains
     }
     return () => clearInterval(interval);
   }, [isScanning, loading, isProcessingLocal]);
@@ -122,14 +127,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     setLoading(false);
   }, [loading, onCardDetected, detectedData]);
 
-  // Calculate relative reticle position
   const getReticleStyle = () => {
     if (!detectedData?.bbox || !videoRef.current) return { display: 'none' };
     
     const video = videoRef.current;
     const { x0, y0, x1, y1 } = detectedData.bbox;
     
-    // Scale factors from canvas/video resolution to displayed UI resolution
     const scaleX = 100 / video.videoWidth;
     const scaleY = 100 / video.videoHeight;
 
@@ -157,43 +160,45 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         {flash && <div className="absolute inset-0 z-50 bg-white/70 pointer-events-none" />}
       </div>
 
-      {/* DETECTED TEXT HIGHLIGHT OVERLAY */}
+      {/* ROI VISUAL GUIDES */}
       <div className="absolute inset-0 z-10 pointer-events-none">
+        {/* Nameplate Scan Zone Guide */}
+        <div className="absolute top-0 left-0 w-full h-[18%] border-b border-cyan-500/30 bg-cyan-500/5 backdrop-blur-[2px]">
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-4 py-1 bg-cyan-900/60 rounded-full border border-cyan-400/30">
+                <span className="text-[7px] font-orbitron font-black text-cyan-400 tracking-[0.4em] uppercase">Primary_Name_Sensor</span>
+            </div>
+        </div>
+
         {detectedData && (
           <div 
             style={getReticleStyle() as any}
-            className="absolute border-2 border-cyan-400 rounded shadow-[0_0_15px_rgba(34,211,238,0.8)] transition-all duration-300 ease-out"
+            className="absolute border-2 border-cyan-400 rounded shadow-[0_0_15px_rgba(34,211,238,0.8)] transition-all duration-150 ease-out"
           >
-            {/* Corner Brackets */}
-            <div className="absolute -top-1 -left-1 w-2 h-2 border-t-2 border-l-2 border-white"></div>
-            <div className="absolute -top-1 -right-1 w-2 h-2 border-t-2 border-r-2 border-white"></div>
-            <div className="absolute -bottom-1 -left-1 w-2 h-2 border-b-2 border-l-2 border-white"></div>
-            <div className="absolute -bottom-1 -right-1 w-2 h-2 border-b-2 border-r-2 border-white"></div>
-            
-            {/* Tag Label */}
-            <div className="absolute -top-6 left-0 bg-cyan-400 text-black px-1.5 py-0.5 text-[8px] font-orbitron font-black uppercase tracking-tighter whitespace-nowrap animate-in slide-in-from-bottom-2">
-              MATCHED: {detectedData.name}
+            <div className="absolute -top-6 left-0 bg-cyan-400 text-black px-1.5 py-0.5 text-[8px] font-orbitron font-black uppercase tracking-tighter whitespace-nowrap">
+              IDENTIFIED: {detectedData.name}
             </div>
           </div>
         )}
 
-        {/* Generic Scanning Line if nothing found */}
-        {!detectedData && !loading && (
-          <div className="absolute top-0 left-0 w-full h-[2px] bg-red-500/50 shadow-[0_0_10px_red] animate-scanline"></div>
+        {/* Scan Pulse Line */}
+        {!loading && (
+          <div className="absolute top-0 left-0 w-full h-[18%] overflow-hidden">
+             <div className="w-full h-[2px] bg-cyan-400/50 shadow-[0_0_10px_cyan] animate-scanline"></div>
+          </div>
         )}
       </div>
 
       <div className="relative z-20 w-full h-full flex flex-col items-center pointer-events-none p-6">
-          <div className="absolute top-[18%] -translate-y-full w-full max-w-sm px-6 transition-transform duration-500">
+          <div className="absolute top-[25%] -translate-y-full w-full max-w-sm px-6 transition-transform duration-500">
             <div className="bg-slate-950/80 backdrop-blur-3xl border border-white/10 px-8 py-5 rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-center border-t-2 border-white/5">
                 <span className="text-xl sm:text-2xl font-orbitron font-black text-white tracking-tighter block truncate">
-                    {loading ? "ANALYZING..." : (detectedData?.name || "AWAITING TARGET")}
+                    {loading ? "PROCESSING..." : (detectedData?.name || "ALIGN CARD NAME")}
                 </span>
                 
                 <div className="mt-2 flex items-center justify-center gap-2">
-                  <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${detectedData || loading ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'}`}></div>
-                  <span className={`text-[8px] font-orbitron font-black tracking-[0.4em] uppercase transition-colors duration-300 ${detectedData || loading ? 'text-cyan-400' : 'text-slate-500'}`}>
-                    {loading ? 'Processing' : detectedData ? 'OCR_LOCKED' : 'Searching System'}
+                  <div className={`w-1.5 h-1.5 rounded-full ${detectedData ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'}`}></div>
+                  <span className={`text-[7px] font-orbitron font-black tracking-[0.4em] uppercase ${detectedData ? 'text-cyan-400' : 'text-slate-500'}`}>
+                    {loading ? 'Analyzing' : detectedData ? 'LOCKED' : 'Searching Header'}
                   </span>
                 </div>
             </div>
@@ -211,7 +216,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           )}
 
           {error && (
-              <div className="absolute top-[32%] left-1/2 -translate-x-1/2 z-[60] bg-red-600/90 backdrop-blur-xl text-white px-8 py-3 rounded-2xl text-[10px] font-orbitron font-black shadow-2xl uppercase tracking-widest">
+              <div className="absolute top-[40%] left-1/2 -translate-x-1/2 z-[60] bg-red-600/90 backdrop-blur-xl text-white px-8 py-3 rounded-2xl text-[10px] font-orbitron font-black shadow-2xl uppercase tracking-widest">
                   {error}
               </div>
           )}

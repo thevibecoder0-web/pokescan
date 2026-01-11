@@ -38,26 +38,61 @@ const initWorker = async () => {
   worker = await createWorker('eng');
 };
 
-export const extractNameLocally = async (canvas: HTMLCanvasElement): Promise<OCRResult | null> => {
+/**
+ * Optimized OCR for Pokemon Cards
+ * 1. Focuses ONLY on the top ~15% of the card area
+ * 2. Applies image pre-processing (Grayscale + Contrast) to smaller buffers
+ * 3. Dramatically reduces false positives from card body text
+ */
+export const extractNameLocally = async (sourceCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     await initWorker();
+
+    // Create a temporary "stripline" canvas for the card name area
+    // The name is always in the top 15% of a portrait card
+    const nameplateCanvas = document.createElement('canvas');
+    const ctx = nameplateCanvas.getContext('2d', { alpha: false });
+    if (!ctx) return null;
+
+    const cropHeight = Math.floor(sourceCanvas.height * 0.18);
+    const cropWidth = sourceCanvas.width;
     
-    // Perform full word-level recognition to get bounding boxes
-    const { data } = await worker.recognize(canvas);
+    nameplateCanvas.width = cropWidth;
+    nameplateCanvas.height = cropHeight;
+
+    // Apply some image conditioning to help Tesseract
+    ctx.filter = 'grayscale(1) contrast(1.4)';
+    ctx.drawImage(
+      sourceCanvas, 
+      0, 0, sourceCanvas.width, cropHeight, // source
+      0, 0, cropWidth, cropHeight // dest
+    );
+
+    // Run recognition on the small, processed buffer (much faster)
+    const { data } = await worker.recognize(nameplateCanvas);
     
     for (const word of data.words) {
+      // Basic cleanup: ignore small artifacts
       const cleanWord = word.text.trim().replace(/[^a-zA-Z]/g, '');
       if (cleanWord.length < 3) continue;
 
-      // Check against species list
+      // Check against species list with strictness based on word length
       for (const species of POKEMON_SPECIES) {
-        if (
-          cleanWord.toLowerCase() === species.toLowerCase() ||
-          getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase()) <= 1
-        ) {
+        const dist = getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase());
+        
+        // Strict matching logic to prevent false positives
+        const isMatch = (cleanWord.length <= 4 && dist === 0) || // Short names (Mew) must be exact
+                        (cleanWord.length > 4 && dist <= 1);    // Longer names allow 1 error
+
+        if (isMatch) {
           return {
             name: species,
-            bbox: word.bbox
+            bbox: {
+                x0: word.bbox.x0,
+                y0: word.bbox.y0,
+                x1: word.bbox.x1,
+                y1: word.bbox.y1
+            }
           };
         }
       }
