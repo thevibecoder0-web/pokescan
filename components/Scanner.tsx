@@ -79,8 +79,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   }, [isScanning]);
 
   /**
-   * INTERPOLATION ENGINE: Linear Interpolation for Smooth HUD Motion
-   * Runs at 60fps independent of the 16Hz detection cycle.
+   * INTERPOLATION ENGINE: 60FPS Fluid Transition
    */
   useEffect(() => {
     const lerp = (start: number, end: number, factor: number) => start + (end - start) * factor;
@@ -89,8 +88,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (targetCorners) {
         setVisualCorners(prev => {
           if (!prev) return targetCorners;
-          // factor 0.2 provides slightly faster response for 16Hz updates while remaining smooth
-          const factor = 0.2; 
+          const factor = 0.18; // Balanced smoothness for 16Hz updates
           return {
             tl: { x: lerp(prev.tl.x, targetCorners.tl.x, factor), y: lerp(prev.tl.y, targetCorners.tl.y, factor) },
             tr: { x: lerp(prev.tr.x, targetCorners.tr.x, factor), y: lerp(prev.tr.y, targetCorners.tr.y, factor) },
@@ -98,8 +96,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             br: { x: lerp(prev.br.x, targetCorners.br.x, factor), y: lerp(prev.br.y, targetCorners.br.y, factor) }
           };
         });
-      } else {
-        setVisualCorners(null);
       }
       animationFrameRef.current = requestAnimationFrame(animate);
     };
@@ -115,11 +111,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     setScanResult(null);
     setDetectedData(null);
     setTargetCorners(null);
+    setVisualCorners(null);
     setIsProcessing(false);
   }, []);
 
   /**
-   * COMPUTER VISION: Discrete Detection Snap
+   * PERSISTENT COMPUTER VISION: Only updates on success to keep HUD locked
    */
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return; 
@@ -184,7 +181,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const heightLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
             const ratio = widthTop / heightLeft;
 
-            if (ratio > 0.60 && ratio < 0.90) {
+            if (ratio > 0.60 && ratio < 0.92) {
               if (area > maxArea) {
                 maxArea = area;
                 foundCorners = potentialCorners;
@@ -196,7 +193,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         cnt.delete();
       }
 
-      setTargetCorners(foundCorners);
+      // PERSISTENCE LOGIC: If a card is not found in this frame, do NOT clear targetCorners.
+      // This keeps the HUD mesh at the last detected area.
+      if (foundCorners) {
+        setTargetCorners(foundCorners);
+      }
 
       src.delete(); dst.delete(); gray.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {
@@ -205,7 +206,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   }, [cvReady]);
 
   /**
-   * VAULT: Store Asset
+   * VAULT: Finalize asset
    */
   const instantVault = async (data: OCRResult) => {
     if (!data.name || !data.number) return;
@@ -215,10 +216,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     lastVerifiedKey.current = verificationKey;
 
     const finalCard: PokemonCard = {
-      id: Math.random().toString(36).substring(7),
+      id: Math.random().toString(36).substr(2, 9),
       name: data.name,
       number: data.number,
-      set: "Verified Scan",
+      set: "Neural Scan",
       rarity: "Detected",
       type: "Unknown",
       marketValue: "$--.--",
@@ -231,23 +232,19 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     
     setTimeout(() => {
       setScanResult(null);
-      setTargetCorners(null);
       setDetectedData(null);
     }, 1500);
   };
 
   /**
-   * HYPER-SMOOTH SCAN LOOP: 16Hz (approx 62ms)
-   * High frequency snaps with 60FPS visual smoothing.
+   * SYNC LOOP: 16Hz Logic (62.5ms)
    */
   useEffect(() => {
     let interval: number;
     if (isScanning && cvReady && !scanResult) {
       interval = window.setInterval(async () => {
-        // Step 1: Trigger high-frequency logical snap
         detectCardWithCV();
 
-        // Step 2: Attempt extraction (OCR logic handles its own async bottleneck)
         if (targetCorners && !isProcessing) {
           setIsProcessing(true);
           const video = videoRef.current!;
@@ -260,7 +257,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const minY = Math.min(targetCorners.tl.y, targetCorners.tr.y, targetCorners.bl.y, targetCorners.br.y);
             const maxY = Math.max(targetCorners.tl.y, targetCorners.tr.y, targetCorners.bl.y, targetCorners.br.y);
 
-            const padding = 25; 
+            const padding = 20; 
             const cropX = Math.max(0, minX - padding);
             const cropY = Math.max(0, minY - padding);
             const cropW = Math.min(video.videoWidth - cropX, (maxX - minX) + (padding * 2));
@@ -271,43 +268,45 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             cCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
             
             const result = await extractNameLocally(cardCanvas);
-            setDetectedData(result);
-            if (result && result.name && result.number) {
-              instantVault(result);
+            if (result) {
+              setDetectedData(result);
+              if (result.name && result.number) {
+                instantVault(result);
+              }
             }
           }
           setIsProcessing(false);
         }
-      }, 62); // 16 times per second (1000/16 = 62.5ms)
+      }, 62); 
     }
     return () => clearInterval(interval);
   }, [isScanning, cvReady, targetCorners, isProcessing, scanResult]);
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
-      <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-90" />
+      <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
-      {/* HUD: Fluid Interpolated Mesh */}
+      {/* HUD: Fluid Persistent Mesh */}
       {visualCorners && viewBox.w > 0 && !scanResult && (
         <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
              <path 
                 d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`}
-                className={`fill-transparent stroke-[4px] transition-colors duration-500 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_25px_rgba(34,211,238,1)]' : 'stroke-white/60'}`}
+                className={`fill-transparent stroke-[4px] transition-all duration-300 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,1)]' : 'stroke-white/40'}`}
              />
              
              {[visualCorners.tl, visualCorners.tr, visualCorners.bl, visualCorners.br].map((p, i) => (
-                <circle key={i} cx={p.x} cy={p.y} r="10" className="fill-cyan-400 stroke-black stroke-2" />
+                <circle key={i} cx={p.x} cy={p.y} r="8" className="fill-cyan-400 stroke-black stroke-2" />
              ))}
           </svg>
 
           <div 
             style={{ left: `${(visualCorners.tl.x / viewBox.w) * 100}%`, top: `${(visualCorners.tl.y / viewBox.h) * 100}%` }}
-            className="absolute -translate-y-28 translate-x-4 flex flex-col gap-2 scale-95 sm:scale-100"
+            className="absolute -translate-y-28 translate-x-4 flex flex-col gap-2 scale-90 sm:scale-100"
           >
              <div className="flex gap-2">
-                <span className={`px-5 py-2.5 text-[14px] font-orbitron font-black uppercase rounded-xl shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
-                  {detectedData?.name || 'SYNC_SAMPLING...'}
+                <span className={`px-4 py-2 text-[12px] font-orbitron font-black uppercase rounded-lg shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
+                  {detectedData?.name || 'NEURAL_LOCKING...'}
                 </span>
              </div>
              {detectedData?.number && (
@@ -319,49 +318,29 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         </div>
       )}
 
-      {/* Success Notification */}
+      {/* Success Modal Overlay */}
       <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-50">
         {scanResult && (
-           <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
+           <div className="bg-slate-900/95 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
               <div className="w-20 h-20 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-[0_0_40px_rgba(34,211,238,0.5)]">
                   <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
               </div>
-              <div className="relative z-10">
-                <div className="text-4xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter drop-shadow-2xl">{scanResult.name}</div>
-                <div className="bg-cyan-500/20 text-cyan-400 py-2 px-8 rounded-full border border-cyan-500/30 inline-block">
-                    <span className="text-[10px] font-orbitron font-black uppercase tracking-[0.4em]">VAULT_SECURED</span>
-                </div>
+              <div className="text-4xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter">{scanResult.name}</div>
+              <div className="bg-cyan-500/20 text-cyan-400 py-2 px-8 rounded-full border border-cyan-500/30 inline-block">
+                  <span className="text-[10px] font-orbitron font-black uppercase tracking-[0.4em]">VAULT_SECURED</span>
               </div>
            </div>
         )}
       </div>
 
-      {/* Telemetry Dashboard */}
-      <div className="absolute bottom-10 left-0 w-full px-10 flex justify-between items-end">
-        <div className="bg-slate-950/90 backdrop-blur-3xl p-6 rounded-[2.5rem] border border-white/10 shadow-3xl min-w-[320px]">
-           <div className="flex items-center gap-4 mb-4">
-             <div className="w-3 h-3 rounded-full bg-cyan-500 animate-pulse"></div>
-             <span className="text-[11px] font-orbitron font-black text-white uppercase tracking-widest">
-                16Hz_ULTRA_SMOOTH
-             </span>
-           </div>
-           <div className="space-y-1">
-             <div className="flex justify-between items-center">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Logic Frequency:</span>
-                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">62ms_DISCRETE</span>
-             </div>
-             <div className="flex justify-between items-center">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Visual Interpolation:</span>
-                <span className="text-[8px] text-green-400 font-black uppercase tracking-tight">60FPS_LOCKED</span>
-             </div>
-           </div>
-        </div>
-
+      {/* Persistence Controls */}
+      <div className="absolute bottom-10 right-10 flex flex-col gap-4">
         <button 
             onClick={handleReset}
-            className="pointer-events-auto bg-slate-900/90 hover:bg-red-600 backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90"
+            className="pointer-events-auto bg-slate-900/90 hover:bg-red-600 backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group"
+            title="Reset Lock"
         >
-            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-8 h-8 text-white group-hover:rotate-180 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
         </button>
