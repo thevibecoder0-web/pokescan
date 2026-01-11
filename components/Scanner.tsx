@@ -16,12 +16,13 @@ interface ScannerProps {
 }
 
 const SCAN_STATUS_MESSAGES = [
-  "ANALYZING_GEOMETRY...",
-  "SETTLING_COORDINATES...",
-  "SAMPLING_TEXT_PIXELS...",
-  "CROSS_REFERENCING_DB...",
-  "VERIFYING_HOLOGRAPHY...",
-  "ESTIMATING_VALUATION..."
+  "LOCKING_PERSPECTIVE...",
+  "EXTRACTING_NEURAL_FEATURES...",
+  "SAMPLING_NAME_SECTOR...",
+  "DECODING_SET_ID...",
+  "QUERYING_GLOBAL_ARCHIVES...",
+  "MATCHING_ART_HEURISTICS...",
+  "VERIFYING_HOLOGRAPHY..."
 ];
 
 const TARGET_REGIONS = {
@@ -60,7 +61,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [idBoxOffset, setIdBoxOffset] = useState({ x: 0, y: 0 });
 
   const lastFoundTime = useRef<number>(0);
-  const lastDeepScanTime = useRef<number>(0);
+  const lastAIScanTime = useRef<number>(0);
   const freezeStartTimeRef = useRef<number>(0);
   const animationFrameRef = useRef<number>(null);
 
@@ -85,7 +86,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (track && (track as any).getCapabilities?.().torch) setTorchSupported(true);
       if (videoRef.current) {
         videoRef.current.srcObject = ms;
-        videoRef.current.onloadedmetadata = () => setViewBox({ w: videoRef.current!.videoWidth, h: videoRef.current!.videoHeight });
+        videoRef.current.onloadedmetadata = () => {
+          if (videoRef.current) {
+            setViewBox({ w: videoRef.current.videoWidth, h: videoRef.current.videoHeight });
+          }
+        };
       }
     } catch (e) { console.error("Camera Fail"); }
   };
@@ -123,15 +128,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         freezeStartTimeRef.current = Date.now();
         
         const base64 = imgData.split(',')[1];
-        processUploadedImage(base64);
+        processAILookup(base64);
       };
       img.src = imgData;
     };
     reader.readAsDataURL(file);
   };
 
-  const processUploadedImage = async (base64: string) => {
+  const processAILookup = async (base64: string) => {
+    if (isDeepScanning) return;
     setIsDeepScanning(true);
+    lastAIScanTime.current = Date.now();
     try {
       const res = await identifyPokemonCard(base64);
       if (res && res.name) {
@@ -139,7 +146,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           ...res, 
           id: Math.random().toString(36).substr(2,9), 
           scanDate: new Date().toLocaleDateString(), 
-          imageUrl: cardCanvasRef.current?.toDataURL() 
+          imageUrl: cardCanvasRef.current?.toDataURL() || `data:image/jpeg;base64,${base64}` 
         });
         setScanResult({ name: res.name, price: res.marketValue || "--" });
         setTimeout(() => {
@@ -148,9 +155,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           setShowWarped(false);
           if (fileInputRef.current) fileInputRef.current.value = "";
         }, 2000);
+      } else {
+        // AI failed or returned nothing, local OCR should be running as fallback
+        console.warn("AI identification returned no result, falling back to neural OCR...");
       }
     } catch (e) {
-      console.error("Deep Scan Fail", e);
+      console.error("Deep AI Scan Fail", e);
     } finally {
       setIsDeepScanning(false);
     }
@@ -183,9 +193,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       // Continuous jitter for scanning look
       if (isFrozen) {
-        setJitter({ x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 4 });
-        setNameBoxOffset({ x: (Math.random() - 0.5) * 1.5, y: (Math.random() - 0.5) * 1.5 });
-        setIdBoxOffset({ x: (Math.random() - 0.5) * 1.5, y: (Math.random() - 0.5) * 1.5 });
+        setJitter({ x: (Math.random() - 0.5) * 6, y: (Math.random() - 0.5) * 6 });
+        setNameBoxOffset({ x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2 });
+        setIdBoxOffset({ x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2 });
       }
 
       animationFrameRef.current = requestAnimationFrame(anim);
@@ -287,6 +297,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
            setFreezeCountdown(50);
            freezeStartTimeRef.current = Date.now();
            frozenFrameRef.current = cv.imread(videoRef.current);
+           
+           // Trigger AI First immediately on lock
+           const lockCanvas = document.createElement('canvas');
+           cv.imshow(lockCanvas, frozenFrameRef.current);
+           processAILookup(lockCanvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
         }
       } else if (!isFrozen && Date.now() - lastFoundTime.current > 300) {
         setTargetCorners(null);
@@ -294,27 +309,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       src.delete(); gray.delete(); claheMat.delete(); clahe.delete(); blurred.delete(); thresh.delete(); edges.delete(); k.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {}
-  }, [cvReady, isFrozen]);
-
-  const triggerDeepScan = async () => {
-    if (isDeepScanning || !cardCanvasRef.current || Date.now() - lastDeepScanTime.current < 3000) return;
-    setIsDeepScanning(true);
-    lastDeepScanTime.current = Date.now();
-    try {
-      const c = cardCanvasRef.current;
-      const b64 = c.toDataURL('image/jpeg', 0.95).split(',')[1];
-      const res = await identifyPokemonCard(b64);
-      if (res && res.name) {
-        onCardDetected({ ...res, id: Math.random().toString(36).substr(2,9), scanDate: new Date().toLocaleDateString(), imageUrl: c.toDataURL() });
-        setScanResult({ name: res.name, price: res.marketValue || "--" });
-        setTimeout(() => {
-          setScanResult(null);
-          setIsFrozen(false);
-          setShowWarped(false);
-        }, 2000);
-      }
-    } catch (e) {} finally { setIsDeepScanning(false); }
-  };
+  }, [cvReady, isFrozen, onCardDetected]);
 
   const processFrame = async () => {
     if (fileInputRef.current?.value) return;
@@ -332,27 +327,31 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       
       cv.imshow(cardCanvasRef.current, dst);
       
-      let ocrMat = new cv.Mat();
-      cv.cvtColor(dst, ocrMat, cv.COLOR_RGBA2GRAY);
-      cv.bilateralFilter(ocrMat, ocrMat, 9, 75, 75);
-      let kernel = cv.matFromArray(3, 3, cv.CV_32F, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
-      cv.filter2D(ocrMat, ocrMat, cv.CV_8U, kernel);
-      kernel.delete();
-      cv.threshold(ocrMat, ocrMat, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
-      
-      const res = await extractNameLocally(cardCanvasRef.current);
-      if (res) {
-        setDetectedData(res);
-        if (res.name && res.number) {
-          onCardDetected({ id: Math.random().toString(36).substr(2,9), name: res.name, number: res.number, set: "Neural Scan", rarity: "Common", type: "Unknown", marketValue: "$--.--", scanDate: new Date().toLocaleDateString(), imageUrl: cardCanvasRef.current.toDataURL() });
-          setScanResult({ name: res.name, price: "--" });
-          setTimeout(() => setScanResult(null), 1500);
-          setIsFrozen(false);
+      // Fallback local OCR (Text Detection)
+      if (!isDeepScanning && !scanResult) {
+        const res = await extractNameLocally(cardCanvasRef.current as HTMLCanvasElement);
+        if (res) {
+          setDetectedData(res);
+          if (res.name && res.number) {
+            onCardDetected({ 
+              id: Math.random().toString(36).substr(2,9), 
+              name: res.name, 
+              number: res.number, 
+              set: "Neural Scan", 
+              rarity: "Common", 
+              type: "Unknown", 
+              marketValue: "$--.--", 
+              scanDate: new Date().toLocaleDateString(), 
+              imageUrl: cardCanvasRef.current?.toDataURL() 
+            });
+            setScanResult({ name: res.name, price: "--" });
+            setTimeout(() => setScanResult(null), 1500);
+            setIsFrozen(false);
+          }
         }
-      } else if (isFrozen && Date.now() - freezeStartTimeRef.current > 1200) {
-        triggerDeepScan();
       }
-      src.delete(); dst.delete(); ocrMat.delete(); M.delete(); sc.delete(); dc.delete();
+
+      src.delete(); dst.delete(); M.delete(); sc.delete(); dc.delete();
     } catch (e) {} finally { setIsProcessing(false); }
   };
 
@@ -367,10 +366,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         }
         
         if ((targetCorners || isFrozen) && !fileInputRef.current?.value) processFrame(); 
-      }, 80);
+      }, 100);
     }
     return () => clearInterval(int);
-  }, [isScanning, cvReady, targetCorners, isProcessing, scanResult, isFrozen]);
+  }, [isScanning, cvReady, targetCorners, isProcessing, scanResult, isFrozen, detectCardWithCV]);
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
@@ -390,11 +389,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               >
                 <canvas 
                   ref={cardCanvasRef} 
-                  className={`w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.3)] border-4 rounded-3xl transition-all duration-150 ${isFrozen ? 'border-cyan-400 brightness-110' : 'border-white/20'}`}
+                  className={`w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.4)] border-4 rounded-3xl transition-all duration-150 ${isFrozen ? 'border-cyan-400 brightness-110' : 'border-white/20'}`}
                 />
               </div>
               
-              {/* Live Telemetry Sector Boxes */}
+              {/* Live Telemetry Sector Boxes (Hunting visualization) */}
               {isFrozen && (
                 <div className="absolute inset-0 pointer-events-none z-30">
                   <div className="relative w-full h-full flex items-center justify-center">
@@ -402,7 +401,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                       
                       {/* Name Detection Zone */}
                       <div 
-                        className="absolute border-2 border-cyan-400 bg-cyan-400/10 rounded-sm shadow-[0_0_20px_rgba(34,211,238,0.5)] transition-all duration-75"
+                        className="absolute border-2 border-cyan-400 bg-cyan-400/20 rounded-sm shadow-[0_0_25px_rgba(34,211,238,0.6)] transition-all duration-100"
                         style={{ 
                           left: `${TARGET_REGIONS.name.x + nameBoxOffset.x}%`, 
                           top: `${TARGET_REGIONS.name.y + nameBoxOffset.y}%`, 
@@ -410,17 +409,18 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                           height: `${TARGET_REGIONS.name.h}%` 
                         }}
                       >
-                        <div className="absolute top-0 left-0 text-[7px] font-orbitron font-black text-white bg-cyan-600 px-1.5 py-0.5 -translate-y-full flex items-center gap-1">
-                          <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
-                          SECTOR_NAME: ACTIVE
+                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-white bg-cyan-600 px-2 py-0.5 -translate-y-full flex items-center gap-1 border border-cyan-400/40">
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                          PRIMARY_ID: SCANNING
                         </div>
-                        {/* Internal Scanning Grid for the box */}
-                        <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.2)_1px,transparent_1px)] bg-[size:10px_10px]" />
+                        <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.3)_1px,transparent_1px)] bg-[size:12px_12px]" />
+                        <div className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-white" />
+                        <div className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-white" />
                       </div>
 
                       {/* ID Detection Zone */}
                       <div 
-                        className="absolute border-2 border-cyan-400 bg-cyan-400/10 rounded-sm shadow-[0_0_20px_rgba(34,211,238,0.5)] transition-all duration-75"
+                        className="absolute border-2 border-cyan-400 bg-cyan-400/20 rounded-sm shadow-[0_0_25px_rgba(34,211,238,0.6)] transition-all duration-100"
                         style={{ 
                           left: `${TARGET_REGIONS.number.x + idBoxOffset.x}%`, 
                           top: `${TARGET_REGIONS.number.y + idBoxOffset.y}%`, 
@@ -428,61 +428,67 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                           height: `${TARGET_REGIONS.number.h}%` 
                         }}
                       >
-                        <div className="absolute top-0 left-0 text-[7px] font-orbitron font-black text-white bg-cyan-600 px-1.5 py-0.5 -translate-y-full flex items-center gap-1">
-                          <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
-                          SECTOR_ID: SEARCHING
+                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-white bg-cyan-600 px-2 py-0.5 -translate-y-full flex items-center gap-1 border border-cyan-400/40">
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                          ARCHIVE_REF: LOCKING
                         </div>
-                        <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.2)_1px,transparent_1px)] bg-[size:10px_10px]" />
+                        <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.3)_1px,transparent_1px)] bg-[size:12px_12px]" />
                       </div>
 
-                      {/* Moving Coordinate Points on edges */}
-                      <div className="absolute -left-4 top-1/2 -translate-y-1/2 h-20 w-1 bg-cyan-400/50 flex flex-col items-center justify-between py-2">
-                        <div className="w-3 h-0.5 bg-cyan-400" />
-                        <div className="w-3 h-0.5 bg-cyan-400" />
+                      {/* Perspective Tracking Lines */}
+                      <div className="absolute -left-8 top-1/2 -translate-y-1/2 h-[60%] w-1 bg-cyan-400/30 flex flex-col items-center justify-between py-4">
+                        <div className="w-5 h-1 bg-cyan-400" />
+                        <div className="w-5 h-1 bg-cyan-400" />
+                        <div className="w-5 h-1 bg-cyan-400" />
                       </div>
-                      <div className="absolute -right-4 top-1/2 -translate-y-1/2 h-20 w-1 bg-cyan-400/50 flex flex-col items-center justify-between py-2">
-                        <div className="w-3 h-0.5 bg-cyan-400" />
-                        <div className="w-3 h-0.5 bg-cyan-400" />
+                      <div className="absolute -right-8 top-1/2 -translate-y-1/2 h-[60%] w-1 bg-cyan-400/30 flex flex-col items-center justify-between py-4">
+                        <div className="w-5 h-1 bg-cyan-400" />
+                        <div className="w-5 h-1 bg-cyan-400" />
+                        <div className="w-5 h-1 bg-cyan-400" />
                       </div>
 
-                      {/* Corner Sight Markers */}
-                      <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-cyan-400" />
-                      <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-cyan-400" />
-                      <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-cyan-400" />
-                      <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-cyan-400" />
+                      {/* Static Corner Sight Markers */}
+                      <div className="absolute -top-4 -left-4 w-12 h-12 border-t-4 border-l-4 border-cyan-400 opacity-80" />
+                      <div className="absolute -top-4 -right-4 w-12 h-12 border-t-4 border-r-4 border-cyan-400 opacity-80" />
+                      <div className="absolute -bottom-4 -left-4 w-12 h-12 border-b-4 border-l-4 border-cyan-400 opacity-80" />
+                      <div className="absolute -bottom-4 -right-4 w-12 h-12 border-b-4 border-r-4 border-cyan-400 opacity-80" />
                     </div>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Global Scanning Overlay */}
-            <div className="absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.05)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none opacity-50" />
+            {/* Global Matrix Overlay */}
+            <div className="absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.08)_1px,transparent_1px)] bg-[size:50px_50px] pointer-events-none opacity-40" />
             
             {isFrozen && (
-               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-slate-950/40 backdrop-blur-[1px] z-40">
-                  <div className="relative mb-12">
-                     <div className="w-32 h-32 border-8 border-cyan-400/20 rounded-full" />
-                     <div className="absolute inset-0 w-32 h-32 border-8 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-                     <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-3xl font-orbitron font-black text-white drop-shadow-[0_0_10px_rgba(34,211,238,1)]">{freezeCountdown}s</span>
+               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-slate-950/50 backdrop-blur-[1px] z-40">
+                  <div className="relative mb-14 scale-125">
+                     <div className="w-32 h-32 border-8 border-cyan-400/10 rounded-full" />
+                     <div className="absolute inset-0 w-32 h-32 border-8 border-cyan-400 border-t-transparent rounded-full animate-spin-slow" />
+                     <div className="absolute inset-0 w-32 h-32 border-4 border-red-500/20 border-b-transparent rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '2s' }} />
+                     <div className="absolute inset-0 flex flex-col items-center justify-center">
+                        <span className="text-sm font-orbitron font-black text-slate-400 uppercase tracking-widest -mb-1">T-MINUS</span>
+                        <span className="text-4xl font-orbitron font-black text-white drop-shadow-[0_0_15px_rgba(34,211,238,1)]">{freezeCountdown}</span>
                      </div>
                   </div>
                   
-                  <div className="bg-slate-900 border border-cyan-400/40 px-10 py-4 rounded-xl flex flex-col items-center gap-2 shadow-[0_0_50px_rgba(0,0,0,0.8)] border-b-4">
-                     <div className="flex items-center gap-3">
-                        <div className="flex gap-1">
+                  <div className="bg-slate-900/95 border-x-4 border-t border-b-4 border-cyan-400/60 px-12 py-5 rounded-2xl flex flex-col items-center gap-3 shadow-[0_0_80px_rgba(0,0,0,0.9)] transition-all duration-300">
+                     <div className="flex items-center gap-4">
+                        <div className="flex gap-1.5">
                            {[...Array(3)].map((_, i) => (
-                              <div key={i} className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: `${i*0.2}s` }} />
+                              <div key={i} className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: `${i*0.15}s` }} />
                            ))}
                         </div>
-                        <span className="text-[12px] font-orbitron font-black text-white uppercase tracking-[0.2em] whitespace-nowrap">
-                           {SCAN_STATUS_MESSAGES[statusIdx]}
+                        <span className="text-[13px] font-orbitron font-black text-white uppercase tracking-[0.3em] whitespace-nowrap">
+                           {isDeepScanning ? "AI_DEEP_ANALYSIS_IN_PROGRESS" : SCAN_STATUS_MESSAGES[statusIdx]}
                         </span>
                      </div>
-                     <div className="w-full h-1 bg-slate-800 rounded-full mt-2 overflow-hidden">
-                        {/* Fix: Using (50 - freezeCountdown) to calculate elapsed percentage for the progress bar as 'elapsed' is not in scope here */}
-                        <div className="h-full bg-cyan-400 transition-all duration-500" style={{ width: `${((50 - freezeCountdown) / 50) * 100}%` }} />
+                     <div className="w-full h-2 bg-slate-800 rounded-full mt-3 overflow-hidden border border-white/5">
+                        <div 
+                          className="h-full bg-cyan-400 transition-all duration-500 shadow-[0_0_10px_rgba(34,211,238,0.8)]" 
+                          style={{ width: `${((50 - freezeCountdown) / 50) * 100}%` }} 
+                        />
                      </div>
                   </div>
                </div>
@@ -490,41 +496,55 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           </div>
       </div>
 
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-4 duration-500">
-        <div className={`bg-slate-900/80 backdrop-blur-2xl border-2 border-white/10 rounded-full px-10 py-5 shadow-2xl flex items-center gap-6 transition-all duration-300 ${isFrozen ? 'border-cyan-400/50 ring-4 ring-cyan-400/10' : ''}`}>
-          <div className="flex items-center gap-4">
-            <span className="text-2xl font-orbitron font-black text-white uppercase tracking-tighter">
-              {detectedData?.name || (isDeepScanning ? 'SEARCHING ARCHIVES...' : (isFrozen ? 'SIGNAL LOCKED' : 'AWAITING ASSET...'))}
-            </span>
+      {/* Dynamic Header Badge */}
+      <div className="absolute top-8 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-6 duration-700">
+        <div className={`bg-slate-900/90 backdrop-blur-3xl border-2 border-white/10 rounded-2xl px-12 py-6 shadow-[0_25px_60px_rgba(0,0,0,0.7)] flex items-center gap-8 transition-all duration-500 ${isFrozen ? 'border-cyan-400 scale-110 ring-8 ring-cyan-400/5' : ''}`}>
+          <div className="flex items-center gap-6">
+            <div className="flex flex-col">
+              <span className="text-[8px] font-orbitron font-black text-cyan-400 tracking-[0.4em] uppercase mb-1">Status_Registry</span>
+              <span className="text-2xl font-orbitron font-black text-white uppercase tracking-tighter">
+                {detectedData?.name || (isDeepScanning ? 'AI_ARCHIVE_MATCH...' : (isFrozen ? 'SIGNAL_LOCKED' : 'AWAITING_ASSET_INPUT'))}
+              </span>
+            </div>
             {detectedData?.number && (
               <>
-                <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,1)]" />
-                <span className="text-2xl font-orbitron font-bold text-cyan-400">
-                  #{detectedData.number}
-                </span>
+                <div className="w-1.5 h-12 bg-slate-800 rounded-full mx-2" />
+                <div className="flex flex-col">
+                   <span className="text-[8px] font-orbitron font-black text-cyan-400 tracking-[0.4em] uppercase mb-1">Index_ID</span>
+                   <span className="text-2xl font-orbitron font-bold text-cyan-400">
+                     #{detectedData.number}
+                   </span>
+                </div>
               </>
             )}
           </div>
         </div>
       </div>
 
+      {/* Success Notification */}
       {scanResult && (
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[60]">
-           <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-cyan-500/50 p-20 rounded-[4rem] shadow-[0_0_200px_rgba(34,211,238,0.4)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
-              <div className="w-24 h-24 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-8 shadow-[0_0_40px_rgba(34,211,238,0.6)]"><svg className="w-14 h-14 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg></div>
-              <div className="text-5xl font-orbitron font-black text-white mb-4 uppercase tracking-tighter">{scanResult.name}</div>
-              <div className="bg-cyan-500/20 text-cyan-400 py-3 px-12 rounded-full border border-cyan-500/40 inline-block font-orbitron font-black uppercase text-xs tracking-[0.3em]">SYNCHRONIZED</div>
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[70]">
+           <div className="bg-slate-950/98 backdrop-blur-3xl border-[6px] border-cyan-500/60 p-24 rounded-[5rem] shadow-[0_0_250px_rgba(34,211,238,0.5)] animate-in zoom-in-90 duration-300 text-center relative overflow-hidden ring-[20px] ring-white/5">
+              <div className="w-28 h-28 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-10 shadow-[0_0_60px_rgba(34,211,238,0.8)] border-4 border-white/20">
+                <svg className="w-16 h-16 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path>
+                </svg>
+              </div>
+              <div className="text-[10px] font-orbitron font-black text-cyan-400 tracking-[0.6em] uppercase mb-4">Neural_Archive_Synced</div>
+              <div className="text-6xl font-orbitron font-black text-white mb-6 uppercase tracking-tighter drop-shadow-2xl">{scanResult.name}</div>
+              <div className="bg-cyan-500 text-slate-950 py-3 px-16 rounded-full border-4 border-cyan-600/50 inline-block font-orbitron font-black uppercase text-sm tracking-[0.4em] shadow-xl">SYNCHRONIZED</div>
            </div>
         </div>
       )}
 
-      <div className="absolute bottom-12 left-0 right-0 z-50 px-12 flex justify-between items-center pointer-events-none">
+      {/* Controls Bar */}
+      <div className="absolute bottom-14 left-0 right-0 z-50 px-16 flex justify-between items-center pointer-events-none">
         {!isFrozen && (
           <button 
             onClick={() => fileInputRef.current?.click()} 
-            className="pointer-events-auto backdrop-blur-2xl p-7 rounded-3xl border border-white/10 bg-slate-900/90 text-cyan-400 shadow-[0_20px_50px_rgba(0,0,0,0.5)] transition-all active:scale-90 hover:bg-slate-800 hover:border-cyan-400/50"
+            className="pointer-events-auto backdrop-blur-3xl p-8 rounded-[2rem] border-2 border-white/10 bg-slate-900/90 text-cyan-400 shadow-[0_30px_70px_rgba(0,0,0,0.6)] transition-all active:scale-90 hover:bg-slate-800 hover:border-cyan-400/70"
           >
-            <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
             </svg>
           </button>
@@ -533,9 +553,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         {torchSupported && !isFrozen && (
           <button 
             onClick={toggleTorch} 
-            className={`pointer-events-auto backdrop-blur-2xl p-7 rounded-3xl border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.5)] transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white shadow-[0_0_30px_rgba(251,191,36,0.5)]' : 'bg-slate-900/90 text-slate-400'}`}
+            className={`pointer-events-auto backdrop-blur-3xl p-8 rounded-[2rem] border-2 border-white/10 shadow-[0_30px_70px_rgba(0,0,0,0.6)] transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-[0_0_40px_rgba(251,191,36,0.6)]' : 'bg-slate-900/90 text-slate-400'}`}
           >
-            <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </button>
