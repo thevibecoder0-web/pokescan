@@ -3,17 +3,17 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
 const SYSTEM_INSTRUCTION = `You are the Neural Core of the PokéScan TCG Identification Unit.
-Your mission is to identify Pokémon cards from visual data, even in EXTREME conditions (low light, motion blur, heavy glare, or partial occlusion).
+Your mission is to identify Pokémon cards from visual data.
 
-ADAPTIVE NEURAL CAPABILITIES:
-1. LOW-LIGHT RECOVERY: If the image is dark, look for unique color distributions, set symbols (bottom corner), and distinctive artwork patterns.
-2. PATTERN MATCHING: Recognize cards by their unique layout (e.g., Illustration Rares, VMAX, Tera Type borders) if text is illegible.
-3. SEARCH GROUNDING: Use Google Search to verify "TCGPlayer Market Price" and official card details for the identified asset.
-4. FULL DATA EXTRACTION: Identify Name, Set, Number, HP, and Type.
+RESILIENCE PROTOCOLS:
+1. NO FAILURES: Even in extreme conditions (blur, low light, glare), you must provide your absolute BEST GUESS based on colors, shapes, artwork, or partial text.
+2. VISUAL HEURISTICS: Use the card's frame (VMAX, GX, Tera, Gold, Silver), artwork style, and set symbol position to narrow down the identity.
+3. SEARCH GROUNDING: Use Google Search to verify the "TCGPlayer Market Price" and ensure the name/number/set combination is valid.
+4. PARTIAL DATA: If you can only see a piece of the name or just the artwork, search for that specific artwork to identify the card.
 
 OUTPUT FORMAT:
-- Return ONLY valid JSON.
-- If the card is completely indistinguishable, return {"name": "IDENTIFICATION_FAILURE", "marketValue": "---"}.`;
+- Return valid JSON. 
+- If you are absolutely unsure, describe the card in the 'name' field (e.g., "Blue Water Pokémon Artwork") so the user can see what you detected.`;
 
 const MODEL_NAME = 'gemini-3-pro-preview';
 
@@ -24,15 +24,15 @@ const getScannerConfig = () => ({
   responseSchema: {
     type: Type.OBJECT,
     properties: {
-      name: { type: Type.STRING, description: "Official card name." },
-      marketValue: { type: Type.STRING, description: "Current market value (e.g. $5.20)." },
+      name: { type: Type.STRING, description: "Official card name or best guess description." },
+      marketValue: { type: Type.STRING, description: "Current market value (e.g. $5.20). Use '$--.--' if unknown." },
       set: { type: Type.STRING, description: "Card set name." },
       number: { type: Type.STRING, description: "Set number (e.g. 123/191)." },
       rarity: { type: Type.STRING, description: "Card rarity tier." },
       hp: { type: Type.STRING, description: "Health points." },
       type: { type: Type.STRING, description: "Pokemon type." }
     },
-    required: ["name", "marketValue", "set", "number"],
+    required: ["name"], // Only name is absolutely required for a result
   },
 });
 
@@ -44,7 +44,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       contents: {
         parts: [
           { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          { text: "CRITICAL_IDENTIFY: Neural analysis required. This image may have poor lighting or quality. Use all visual cues (artwork, layout, symbols) to determine the exact card identity and market value." },
+          { text: "DEEP_IDENTIFY: Neural scan required. Use all available visual features to identify this card. If lighting is poor, analyze the distinctive shapes and colors of the artwork and border." },
         ],
       },
       config: getScannerConfig() as any,
@@ -57,17 +57,24 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
     try {
       result = JSON.parse(response.text?.trim() || "{}");
     } catch (e) {
-      console.warn("Gemini returned non-JSON. Parsing fallback.");
-      return null;
+      console.warn("Gemini returned invalid JSON. Attempting string recovery.");
+      // Simple fallback if JSON is broken but name exists in text
+      const text = response.text || "";
+      const nameMatch = text.match(/"name":\s*"([^"]+)"/);
+      if (nameMatch) {
+        result = { name: nameMatch[1] };
+      } else {
+        return null;
+      }
     }
     
-    if (!result.name || result.name === "IDENTIFICATION_FAILURE") return null;
+    if (!result.name) return null;
 
     return {
       name: result.name,
       marketValue: result.marketValue || "$--.--",
-      set: result.set || "Unknown",
-      rarity: result.rarity || "Common",
+      set: result.set || "Unknown Set",
+      rarity: result.rarity || "Unknown",
       type: result.type || "Unknown",
       number: result.number || "???",
       hp: result.hp || "0",

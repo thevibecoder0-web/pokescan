@@ -29,8 +29,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { 
           facingMode: 'environment', 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 } 
+          width: { ideal: 1920 }, // Higher resolution for better detail in bad light
+          height: { ideal: 1080 } 
         },
         audio: false,
       });
@@ -83,12 +83,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
         }
         setIsProcessingLocal(false);
-      }, 250);
+      }, 300);
     }
     return () => clearInterval(interval);
   }, [isScanning, loading, isProcessingLocal, neuralProcessing]);
 
-  // NEURAL DEEP SCAN (PRO ID) WITH IMAGE ENHANCEMENT
+  // NEURAL DEEP SCAN (PRO ID) WITH AGGRESSIVE ENHANCEMENT
   const triggerNeuralDeepScan = async () => {
     if (!videoRef.current || !canvasRef.current || loading || neuralProcessing) return;
 
@@ -104,12 +104,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       
-      // PRE-PROCESSING FOR BAD LIGHTING
-      // We apply a brightness and contrast boost to the image before sending it to Gemini
-      context.filter = 'brightness(1.2) contrast(1.1) saturate(1.1)';
+      // AGGRESSIVE ENHANCEMENT FOR LOW LIGHT
+      // We apply multiple filters to bring out hidden details
+      // 1. Boost brightness significantly
+      // 2. High contrast to separate card from background
+      // 3. Sharpening simulation (contrast + saturation)
+      context.filter = 'brightness(1.5) contrast(1.3) saturate(1.2) sepia(0.1)';
       context.drawImage(video, 0, 0);
       
-      const base64Image = canvas.toDataURL('image/jpeg', 0.85);
+      const base64Image = canvas.toDataURL('image/jpeg', 0.9);
       const base64Data = base64Image.split(',')[1];
 
       try {
@@ -125,20 +128,18 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           onCardDetected(finalCard);
           setTimeout(() => setScanResult(null), 3000);
         } else {
-          setError("NEURAL_LINK_ERROR: Asset unrecognizable. Check lighting.");
-          setTimeout(() => setError(null), 4000);
+          setError("NEURAL_ANALYSIS_STALLED: Try bringing the card closer or adding light.");
+          setTimeout(() => setError(null), 5000);
         }
       } catch (err) {
-        setError("AI_ENGINE_OFFLINE");
-        setTimeout(() => setError(null), 3000);
+        setError("AI_ENGINE_TIMEOUT: Check network connection.");
+        setTimeout(() => setError(null), 4000);
       }
     }
     setNeuralProcessing(false);
   };
 
   const handleCaptureAndBind = useCallback(async () => {
-    // If local OCR has a lock, we can store immediately. 
-    // Otherwise, we trigger a Neural Deep Scan.
     if (!videoRef.current || !canvasRef.current || loading || neuralProcessing) return;
 
     if (detectedData) {
@@ -169,7 +170,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       setTimeout(() => setScanResult(null), 2500);
       setLoading(false);
     } else {
-      // If no local name found, perform a deep neural scan
       triggerNeuralDeepScan();
     }
   }, [loading, neuralProcessing, onCardDetected, detectedData]);
@@ -200,99 +200,109 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           autoPlay
           playsInline
           className={`w-full h-full object-cover transition-all duration-1000 ${
-            (loading || neuralProcessing) ? 'opacity-40 blur-2xl scale-110' : 'opacity-100'
+            (loading || neuralProcessing) ? 'opacity-30 blur-3xl scale-125' : 'opacity-100'
           }`}
         />
-        {flash && <div className="absolute inset-0 z-50 bg-white/70 pointer-events-none" />}
+        {flash && <div className="absolute inset-0 z-50 bg-white/80 pointer-events-none" />}
       </div>
 
-      {/* OVERLAYS & UI */}
       <div className="absolute inset-0 z-10 pointer-events-none">
-        {/* Scanner ROI */}
-        <div className={`absolute top-0 left-0 w-full h-[18%] border-b border-cyan-500/30 transition-colors duration-500 ${neuralProcessing ? 'bg-purple-500/10 border-purple-500/50' : 'bg-cyan-500/5'}`}>
-            <div className={`absolute bottom-2 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full border transition-all ${neuralProcessing ? 'bg-purple-900/60 border-purple-400/30' : 'bg-cyan-900/60 border-cyan-400/30'}`}>
-                <span className={`text-[7px] font-orbitron font-black tracking-[0.4em] uppercase transition-colors ${neuralProcessing ? 'text-purple-400' : 'text-cyan-400'}`}>
-                  {neuralProcessing ? 'Neural_Asset_Lock' : 'Optical_Sensor_Active'}
+        <div className={`absolute top-0 left-0 w-full h-[18%] border-b border-cyan-500/30 transition-all duration-700 ${neuralProcessing ? 'bg-purple-600/20 border-purple-400' : 'bg-cyan-500/5'}`}>
+            <div className={`absolute bottom-2 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full border transition-all ${neuralProcessing ? 'bg-purple-900 border-purple-400 animate-pulse' : 'bg-cyan-900/60 border-cyan-400/30'}`}>
+                <span className={`text-[8px] font-orbitron font-black tracking-[0.4em] uppercase transition-colors ${neuralProcessing ? 'text-purple-300' : 'text-cyan-400'}`}>
+                  {neuralProcessing ? 'NEURAL_ENHANCEMENT_ACTIVE' : 'READY_FOR_ACQUISITION'}
                 </span>
             </div>
         </div>
 
-        {/* OCR Reticle */}
         {detectedData && !neuralProcessing && (
           <div 
             style={getReticleStyle() as any}
-            className="absolute border-2 border-cyan-400 rounded shadow-[0_0_15px_rgba(34,211,238,0.8)] transition-all duration-150 ease-out"
+            className="absolute border-2 border-cyan-400 rounded shadow-[0_0_20px_rgba(34,211,238,1)] transition-all duration-150 ease-out"
           >
-            <div className="absolute -top-6 left-0 bg-cyan-400 text-black px-1.5 py-0.5 text-[8px] font-orbitron font-black uppercase tracking-tighter whitespace-nowrap">
-              LOCAL_LOCK: {detectedData.name}
+            <div className="absolute -top-6 left-0 bg-cyan-400 text-black px-2 py-0.5 text-[9px] font-orbitron font-black uppercase tracking-tighter whitespace-nowrap">
+              LOCK: {detectedData.name}
             </div>
           </div>
         )}
 
-        {/* Scan Line */}
         {!loading && !neuralProcessing && (
           <div className="absolute top-0 left-0 w-full h-[18%] overflow-hidden">
-             <div className="w-full h-[2px] bg-cyan-400/50 shadow-[0_0_10px_cyan] animate-scanline"></div>
+             <div className="w-full h-[3px] bg-cyan-400 shadow-[0_0_15px_cyan] animate-scanline"></div>
           </div>
         )}
 
-        {/* Neural Processing Visuals */}
         {neuralProcessing && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/20 backdrop-blur-sm">
-            <div className="w-48 h-48 relative flex items-center justify-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/40 backdrop-blur-md">
+            <div className="w-64 h-64 relative flex items-center justify-center scale-110 sm:scale-150">
                <div className="absolute inset-0 border-t-4 border-purple-500 rounded-full animate-spin"></div>
-               <div className="absolute inset-4 border-b-4 border-cyan-400 rounded-full animate-spin-slow"></div>
-               <span className="text-white font-orbitron font-black text-xs animate-pulse">NEURAL_DEEP_SCAN</span>
+               <div className="absolute inset-4 border-r-4 border-cyan-400 rounded-full animate-spin-slow"></div>
+               <div className="absolute inset-8 border-b-4 border-pink-500 rounded-full animate-spin opacity-50"></div>
+               <span className="text-white font-orbitron font-black text-[10px] animate-pulse tracking-widest">ENHANCING_ASSET</span>
             </div>
-            <p className="mt-8 text-white/50 font-orbitron text-[8px] uppercase tracking-[0.5em] animate-pulse">Reconstructing visual assets from noisy stream...</p>
+            <div className="mt-16 flex flex-col items-center gap-2">
+                <p className="text-white/80 font-orbitron text-[9px] uppercase tracking-[0.5em] animate-pulse">Neural Reconstruct in progress...</p>
+                <p className="text-purple-400 font-orbitron text-[7px] uppercase tracking-[0.3em]">Normalizing exposure & spectral data</p>
+            </div>
           </div>
         )}
       </div>
 
       <div className="relative z-20 w-full h-full flex flex-col items-center pointer-events-none p-6">
           <div className="absolute top-[25%] -translate-y-full w-full max-w-sm px-6 transition-transform duration-500">
-            <div className="bg-slate-950/80 backdrop-blur-3xl border border-white/10 px-8 py-5 rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-center border-t-2 border-white/5">
-                <span className="text-xl sm:text-2xl font-orbitron font-black text-white tracking-tighter block truncate">
-                    {neuralProcessing ? "NEURAL_LINKING..." : loading ? "STORING..." : (detectedData?.name || "ALIGN CARD NAME")}
+            <div className={`bg-slate-950/90 backdrop-blur-3xl border px-8 py-6 rounded-[3rem] shadow-[0_30px_60px_rgba(0,0,0,0.7)] text-center transition-all duration-700 ${neuralProcessing ? 'border-purple-500/50 scale-105' : 'border-white/10'}`}>
+                <span className={`text-xl sm:text-3xl font-orbitron font-black tracking-tighter block truncate transition-colors ${neuralProcessing ? 'text-purple-300' : 'text-white'}`}>
+                    {neuralProcessing ? "AI_PROCESSING..." : loading ? "STORING..." : (detectedData?.name || "CENTER CARD")}
                 </span>
                 
-                <div className="mt-2 flex items-center justify-center gap-2">
-                  <div className={`w-1.5 h-1.5 rounded-full ${detectedData || neuralProcessing ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'}`}></div>
-                  <span className={`text-[7px] font-orbitron font-black tracking-[0.4em] uppercase ${detectedData || neuralProcessing ? 'text-cyan-400' : 'text-slate-500'}`}>
-                    {neuralProcessing ? 'Neural Analysis' : loading ? 'Syncing' : detectedData ? 'OCR_LOCK' : 'Target Acquisition'}
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${detectedData || neuralProcessing ? (neuralProcessing ? 'bg-purple-400' : 'bg-cyan-400') + ' animate-pulse' : 'bg-slate-700'}`}></div>
+                  <span className={`text-[8px] font-orbitron font-black tracking-[0.5em] uppercase transition-colors ${neuralProcessing ? 'text-purple-400' : detectedData ? 'text-cyan-400' : 'text-slate-600'}`}>
+                    {neuralProcessing ? 'DEEP_BRAIN' : loading ? 'SYNC_VAULT' : detectedData ? 'OCR_TARGET' : 'SEARCHING_HEADER'}
                   </span>
                 </div>
             </div>
           </div>
 
-          <div className="absolute bottom-32 left-1/2 -translate-x-1/2 flex flex-col items-center gap-4 pointer-events-auto">
+          <div className="absolute bottom-32 left-1/2 -translate-x-1/2 flex flex-col items-center gap-5 pointer-events-auto">
             <button 
               onClick={(e) => { e.stopPropagation(); triggerNeuralDeepScan(); }}
-              className="px-10 py-4 bg-slate-950/80 backdrop-blur-md border border-purple-500/40 text-purple-400 font-orbitron font-black text-[10px] uppercase tracking-widest rounded-2xl hover:bg-purple-500 hover:text-slate-950 transition-all active:scale-95 shadow-2xl flex items-center gap-3"
+              className="group px-12 py-5 bg-slate-950/90 backdrop-blur-xl border border-purple-500/50 text-purple-400 font-orbitron font-black text-[11px] uppercase tracking-[0.4em] rounded-[2rem] hover:bg-purple-600 hover:text-white hover:border-white/20 transition-all active:scale-90 shadow-[0_20px_50px_rgba(168,85,247,0.3)] flex items-center gap-4"
             >
-              <div className="w-2 h-2 bg-purple-400 rounded-full animate-ping"></div>
-              Neural Enhance (Pro)
+              <div className="w-2.5 h-2.5 bg-purple-400 rounded-full animate-ping group-hover:bg-white"></div>
+              Neural Boost (Pro ID)
             </button>
-            <p className="text-white/40 text-[8px] font-orbitron uppercase tracking-widest text-center max-w-[200px]">
-              Tap screen to Quick-Add, or use Neural Enhance for better low-light accuracy.
-            </p>
+            <div className="flex flex-col items-center gap-1 opacity-60">
+                <p className="text-white text-[9px] font-orbitron uppercase tracking-widest text-center">
+                    Tap to Store Lock or Capture Boost
+                </p>
+            </div>
           </div>
 
           {scanResult && !loading && !neuralProcessing && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-md z-40 animate-in fade-in zoom-in duration-300">
-                  <div className="bg-slate-950 border border-green-500/40 p-10 rounded-[4rem] shadow-[0_0_100px_rgba(34,197,94,0.3)] flex flex-col items-center gap-6 text-center max-w-xs w-full">
-                      <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(34,197,94,0.6)]">
-                          <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 backdrop-blur-2xl z-40 animate-in fade-in zoom-in duration-500">
+                  <div className="bg-slate-900 border-2 border-green-500/50 p-12 rounded-[5rem] shadow-[0_0_150px_rgba(34,197,94,0.4)] flex flex-col items-center gap-8 text-center max-w-sm w-full transform -rotate-1">
+                      <div className="w-24 h-24 bg-green-500 rounded-full flex items-center justify-center shadow-[0_0_60px_rgba(34,197,94,0.8)] animate-bounce">
+                          <svg className="w-14 h-14 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
                       </div>
-                      <h2 className="text-2xl font-orbitron font-black text-white uppercase tracking-tighter leading-none">{scanResult.name}</h2>
-                      <span className="text-green-400 font-orbitron font-bold text-lg">{scanResult.price}</span>
+                      <div className="space-y-2">
+                        <h2 className="text-3xl font-orbitron font-black text-white uppercase tracking-tighter leading-none">{scanResult.name}</h2>
+                        <div className="flex items-center justify-center gap-2">
+                             <div className="h-px w-8 bg-slate-700"></div>
+                             <span className="text-green-400 font-orbitron font-bold text-2xl tracking-widest">{scanResult.price}</span>
+                             <div className="h-px w-8 bg-slate-700"></div>
+                        </div>
+                      </div>
                   </div>
               </div>
           )}
 
           {error && (
-              <div className="absolute top-[40%] left-1/2 -translate-x-1/2 z-[60] bg-red-600/90 backdrop-blur-xl text-white px-8 py-3 rounded-2xl text-[10px] font-orbitron font-black shadow-2xl uppercase tracking-widest text-center whitespace-nowrap">
-                  {error}
+              <div className="absolute top-[45%] left-1/2 -translate-x-1/2 z-[60] bg-red-600 text-white px-10 py-5 rounded-3xl text-[10px] font-orbitron font-black shadow-[0_0_50px_rgba(220,38,38,0.5)] uppercase tracking-[0.3em] text-center max-w-[80vw]">
+                  <div className="flex items-center gap-3">
+                    <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                    {error}
+                  </div>
               </div>
           )}
       </div>
