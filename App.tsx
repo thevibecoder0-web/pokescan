@@ -27,9 +27,11 @@ const App: React.FC = () => {
     localStorage.setItem('poke_collection', JSON.stringify(collection));
   }, [collection]);
 
-  const addCard = (card: PokemonCard) => {
+  const addCard = (card: PokemonCard, shouldSwitchView = false) => {
     setCollection(prev => [card, ...prev]);
-    setViewMode('collection');
+    if (shouldSwitchView) {
+      setViewMode('collection');
+    }
   };
 
   const removeCard = (id: string) => {
@@ -98,14 +100,14 @@ const App: React.FC = () => {
             <Scanner 
                 isScanning={true} 
                 setIsScanning={(val) => !val && setViewMode('collection')} 
-                onCardDetected={addCard} 
+                onCardDetected={(card) => addCard(card, false)} 
             />
           </div>
         )}
 
         {viewMode === 'manual' && (
           <div className="animate-in fade-in zoom-in duration-300">
-             <ManualSearch onAddCard={addCard} />
+             <ManualSearch onAddCard={(card) => addCard(card, true)} />
           </div>
         )}
 

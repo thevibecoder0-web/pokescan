@@ -169,7 +169,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     
     lockTriggeredRef.current = true; // Ensure single capture per lock
     
-    const v = videoRef.current;
     onCardDetected({ 
       id: Math.random().toString(36).substr(2,9), 
       name: "(unfound)", 
@@ -185,6 +184,30 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     setScanResult({ name: "(unfound)", price: "--" });
     setTimeout(() => setScanResult(null), 2000);
   }, [onCardDetected]);
+
+  /**
+   * High-Frequency Perspective Warping
+   * Updates cardCanvasRef with the warped card image for OCR and timeout capture.
+   */
+  const updateCardWarp = useCallback(() => {
+    if (!cvReady || !targetCorners || !videoRef.current || !cardCanvasRef.current) return;
+    try {
+      const v = videoRef.current;
+      const corners = targetCorners;
+      let src = cv.imread(v);
+      let dst = new cv.Mat();
+      let dsize = new cv.Size(400, 560);
+      let sc = cv.matFromArray(4, 1, cv.CV_32FC2, [corners.tl.x, corners.tl.y, corners.tr.x, corners.tr.y, corners.br.x, corners.br.y, corners.bl.x, corners.bl.y]);
+      let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 400, 0, 400, 560, 0, 560]);
+      let M = cv.getPerspectiveTransform(sc, dc);
+      cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+      cv.imshow(cardCanvasRef.current, dst);
+      
+      src.delete(); dst.delete(); M.delete(); sc.delete(); dc.delete();
+    } catch (e) {
+      console.warn("Warp error", e);
+    }
+  }, [cvReady, targetCorners]);
 
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return;
@@ -240,6 +263,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             lockStartTimeRef.current = Date.now();
         }
 
+        // Warp immediately for sharp image capture
+        updateCardWarp();
+
         // 2-second timeout for "(unfound)"
         if (stabilityScore > 10 && !lockTriggeredRef.current && !scanResult) {
             if (Date.now() - lockStartTimeRef.current > 2000) {
@@ -248,7 +274,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         }
         
         // Auto-trigger AI lookup if high stability
-        if (stabilityScore > 12 && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 8000) {
+        if (stabilityScore > 15 && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 10000) {
           const snapshot = document.createElement('canvas');
           snapshot.width = v.videoWidth;
           snapshot.height = v.videoHeight;
@@ -266,7 +292,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     } catch (e) {
       console.warn("CV Frame Error", e);
     }
-  }, [cvReady, isDeepScanning, scanResult, stabilityScore, captureUnfound]);
+  }, [cvReady, isDeepScanning, scanResult, stabilityScore, captureUnfound, updateCardWarp]);
 
   const runLocalOCR = useCallback(async () => {
     if (!cvReady || !targetCorners || isProcessingLocal || scanResult || !videoRef.current || !cardCanvasRef.current) return;
@@ -275,16 +301,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     setIsProcessingLocal(true);
     lastLocalOCRTime.current = Date.now();
     try {
-      const v = videoRef.current;
-      const corners = targetCorners;
-      
-      let src = cv.imread(v), dst = new cv.Mat(), dsize = new cv.Size(400, 560);
-      let sc = cv.matFromArray(4, 1, cv.CV_32FC2, [corners.tl.x, corners.tl.y, corners.tr.x, corners.tr.y, corners.br.x, corners.br.y, corners.bl.x, corners.bl.y]);
-      let dc = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, 400, 0, 400, 560, 0, 560]);
-      let M = cv.getPerspectiveTransform(sc, dc);
-      cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
-      cv.imshow(cardCanvasRef.current, dst);
-      
+      // Use the already-warped canvas for OCR
       const ocrData = await extractAllCardText(cardCanvasRef.current);
       if (ocrData && ocrData.fullText.length > 5) {
         setDetectedData(ocrData);
@@ -310,7 +327,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           setTimeout(() => setScanResult(null), 2000);
         }
       }
-      src.delete(); dst.delete(); M.delete(); sc.delete(); dc.delete();
     } catch (e) {
       console.warn("Local OCR Error", e);
     } finally {
@@ -411,7 +427,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       <div className="absolute bottom-16 left-0 right-0 z-50 px-16 flex justify-between items-center pointer-events-none">
         <button 
           onClick={() => fileInputRef.current?.click()} 
-          className="pointer-events-auto backdrop-blur-3xl p-8 rounded-[2.5rem] border-2 border-white/10 bg-slate-900/90 text-cyan-400 shadow-2xl hover:bg-slate-800 transition-all active:scale-90"
+          className="pointer-events-auto backdrop-blur-3xl p-8 rounded-[2.5rem] border-2 border-white/10 bg-slate-900/90 text-cyan-400 shadow-2xl hover:bg-slate-800 transition-all active:scale-95"
         >
           <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -421,7 +437,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         {torchSupported && (
           <button 
             onClick={toggleTorch} 
-            className={`pointer-events-auto backdrop-blur-3xl p-8 rounded-[2.5rem] border-2 border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-slate-950 shadow-amber-400/40' : 'bg-slate-900/90 text-slate-400'}`}
+            className={`pointer-events-auto backdrop-blur-3xl p-8 rounded-[2.5rem] border-2 border-white/10 shadow-2xl transition-all active:scale-95 ${isTorchOn ? 'bg-amber-400 text-slate-950 shadow-amber-400/40' : 'bg-slate-900/90 text-slate-400'}`}
           >
             <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
