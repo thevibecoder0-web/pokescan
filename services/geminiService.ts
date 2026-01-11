@@ -2,27 +2,27 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { IdentificationResult } from "../types";
 
-const SYSTEM_INSTRUCTION = `You are a high-precision Pokémon TCG asset identifier.
-Your task is to identify the Pokémon card in the image and provide its official name and current market value.
+const SYSTEM_INSTRUCTION = `You are a high-precision OCR engine specialized in Pokémon TCG cards.
+Your SOLE task is to extract the text located in the TOP-LEFT corner of the card provided in the image. 
+This is typically the Pokémon's name.
 
 STRICT RULES:
-1. The Pokémon's name is always in the TOP-LEFT corner.
-2. Use Google Search to find the current TCGPlayer market price for the English version of this card.
-3. Return the results strictly in JSON format.`;
+1. Only return the text found in the top-left.
+2. Do not attempt to identify the set, rarity, or other attributes unless they are part of the name text in that specific corner.
+3. If no text is found in the top-left, return "Unknown".
+4. Return the result in JSON format.`;
 
 const MODEL_NAME = 'gemini-3-flash-preview';
 
 const getScannerConfig = () => ({
   systemInstruction: SYSTEM_INSTRUCTION,
-  tools: [{ googleSearch: {} }],
   responseMimeType: "application/json",
   responseSchema: {
     type: Type.OBJECT,
     properties: {
-      name: { type: Type.STRING, description: "The Pokémon's name from the top-left." },
-      marketValue: { type: Type.STRING, description: "The current market price in USD, e.g., '$12.50'." }
+      name: { type: Type.STRING, description: "The text extracted from the top-left corner of the card." }
     },
-    required: ["name", "marketValue"],
+    required: ["name"],
   },
 });
 
@@ -35,7 +35,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
         {
           parts: [
             { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-            { text: "Identify the name in the top-left of this card and its current market price." },
+            { text: "Extract the text from the top-left corner of this card image." },
           ],
         },
       ],
@@ -44,9 +44,9 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
     
     const result = JSON.parse(response.text);
     
+    // We return a partial result that satisfies the UI display requirement
     return {
       name: result.name || "Unknown",
-      marketValue: result.marketValue || "$??.??",
       set: "SV8",
       rarity: "Common",
       type: "Unknown",
@@ -57,11 +57,15 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       imageUrl: ""
     } as IdentificationResult;
   } catch (error) {
-    console.error("Scanning Error:", error);
+    console.error("OCR Extraction Error:", error);
     return null;
   }
 };
 
+/**
+ * Keeping manual lookup and set fetch for the "Lookup" and "Vault" tabs 
+ * while the scanner is specialized for top-left text.
+ */
 export const manualCardLookup = async (query: string): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
