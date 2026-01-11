@@ -3,7 +3,11 @@ import { createWorker } from 'tesseract.js';
 
 let worker: any = null;
 
-// Standard Levenshtein Distance for fuzzy string matching
+export interface OCRResult {
+  name: string;
+  bbox: { x0: number; y0: number; x1: number; y1: number } | null;
+}
+
 const getLevenshteinDistance = (a: string, b: string): number => {
   const matrix = Array.from({ length: a.length + 1 }, () => 
     Array.from({ length: b.length + 1 }, (_, i) => i)
@@ -34,32 +38,27 @@ const initWorker = async () => {
   worker = await createWorker('eng');
 };
 
-/**
- * Extracts a Pokemon name from a canvas using local OCR (Tesseract.js).
- * @param canvas The canvas containing the card image.
- * @returns The identified Pokemon name or null.
- */
-export const extractNameLocally = async (canvas: HTMLCanvasElement): Promise<string | null> => {
+export const extractNameLocally = async (canvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
     await initWorker();
-    const { data: { text } } = await worker.recognize(canvas);
     
-    // Split recognized text into words to find candidate names
-    const words = text.split(/\s+/);
+    // Perform full word-level recognition to get bounding boxes
+    const { data } = await worker.recognize(canvas);
     
-    for (const word of words) {
-      // Remove non-alphabetical characters for cleaner matching
-      const cleanWord = word.trim().replace(/[^a-zA-Z]/g, '');
+    for (const word of data.words) {
+      const cleanWord = word.text.trim().replace(/[^a-zA-Z]/g, '');
       if (cleanWord.length < 3) continue;
 
-      // Check for exact matches first
-      const exactMatch = POKEMON_SPECIES.find(s => s.toLowerCase() === cleanWord.toLowerCase());
-      if (exactMatch) return exactMatch;
-
-      // Fuzzy match using Levenshtein distance to handle minor OCR errors
+      // Check against species list
       for (const species of POKEMON_SPECIES) {
-        if (getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase()) <= 1) {
-          return species;
+        if (
+          cleanWord.toLowerCase() === species.toLowerCase() ||
+          getLevenshteinDistance(cleanWord.toLowerCase(), species.toLowerCase()) <= 1
+        ) {
+          return {
+            name: species,
+            bbox: word.bbox
+          };
         }
       }
     }
