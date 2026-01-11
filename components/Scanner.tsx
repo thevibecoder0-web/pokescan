@@ -1,9 +1,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { extractNameLocally, OCRResult } from '../services/ocrService';
-import { manualCardLookup } from '../services/geminiService';
 import { PokemonCard } from '../types';
-import { SURGING_SPARKS_DATA } from '../data/surgingSparks';
 
 // Global OpenCV helper
 declare var cv: any;
@@ -32,21 +30,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const cardCanvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isVerifying, setIsVerifying] = useState(false);
   const [detectedData, setDetectedData] = useState<OCRResult | null>(null);
   const [cvReady, setCvReady] = useState(false);
   
-  // Perspective & Lock State
+  // Perspective state
   const [corners, setCorners] = useState<CardCorners | null>(null);
   const [viewBox, setViewBox] = useState({ w: 0, h: 0 });
-  const [identificationStartTime, setIdentificationStartTime] = useState<number | null>(null);
-  const [lockProgress, setLockProgress] = useState(100);
   
   const [scanResult, setScanResult] = useState<{name: string, price: string} | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   
   const lastSeenTimeoutRef = useRef<number | null>(null);
-  const watchdogTimerRef = useRef<number | null>(null);
   const lastVerifiedKey = useRef<string>("");
 
   useEffect(() => {
@@ -85,44 +79,16 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const handleReset = useCallback(() => {
     lastVerifiedKey.current = "";
     setScanResult(null);
-    setIsVerifying(false);
     setDetectedData(null);
     setCorners(null);
-    setIdentificationStartTime(null);
-    setLockProgress(100);
     setIsProcessing(false);
-    if (watchdogTimerRef.current) {
-      clearTimeout(watchdogTimerRef.current);
-      watchdogTimerRef.current = null;
-    }
   }, []);
 
   /**
-   * LOCK EXPIRY LOGIC
-   * If we've been trying to identify the current corner snap for > 5s,
-   * we release the lock and find a new one.
+   * COMPUTER VISION: Vertex Extraction - Size/Ratio constraints REMOVED
    */
-  useEffect(() => {
-    if (identificationStartTime && corners && !scanResult && !isVerifying) {
-      const timer = setInterval(() => {
-        const elapsed = Date.now() - identificationStartTime;
-        const remaining = Math.max(0, 100 - (elapsed / 5000) * 100);
-        setLockProgress(remaining);
-
-        if (elapsed > 5000) {
-          console.log("Identification Timeout: Re-acquiring perspective lock...");
-          setCorners(null);
-          setIdentificationStartTime(null);
-          setDetectedData(null);
-          setLockProgress(100);
-        }
-      }, 100);
-      return () => clearInterval(timer);
-    }
-  }, [identificationStartTime, corners, scanResult, isVerifying]);
-
   const detectCardWithCV = useCallback(() => {
-    if (!cvReady || !videoRef.current || !canvasRef.current || corners) return; // Don't search if already locked
+    if (!cvReady || !videoRef.current || !canvasRef.current || corners) return; 
     
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -156,7 +122,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
         
-        if (area > (canvas.width * canvas.height * 0.1)) {
+        // Only require minimal area to prevent scanning artifacts
+        if (area > (canvas.width * canvas.height * 0.05)) {
           let approx = new cv.Mat();
           let peri = cv.arcLength(cnt, true);
           cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
@@ -180,15 +147,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               bl: sortedByDiff[3]
             };
 
-            const widthTop = Math.hypot(potentialCorners.tr.x - potentialCorners.tl.x, potentialCorners.tr.y - potentialCorners.tl.y);
-            const heightLeft = Math.hypot(potentialCorners.bl.x - potentialCorners.tl.x, potentialCorners.bl.y - potentialCorners.tl.y);
-            const ratio = widthTop / heightLeft;
-
-            if (ratio > 0.60 && ratio < 0.85) {
-              if (area > maxArea) {
-                maxArea = area;
-                foundCorners = potentialCorners;
-              }
+            // No ratio check - snap to anything with 4 points
+            if (area > maxArea) {
+              maxArea = area;
+              foundCorners = potentialCorners;
             }
           }
           approx.delete();
@@ -198,7 +160,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
       if (foundCorners) {
         setCorners(foundCorners);
-        setIdentificationStartTime(Date.now());
       }
 
       src.delete(); dst.delete(); gray.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
@@ -207,72 +168,53 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }
   }, [cvReady, corners]);
 
-  const verifyAndVault = async (data: OCRResult) => {
-    if (isVerifying || !data.name || !data.number) return;
+  /**
+   * VAULT: Verification REMOVED
+   * Just adds the OCR result directly to the collection.
+   */
+  const instantVault = async (data: OCRResult) => {
+    if (!data.name || !data.number) return;
     const verificationKey = `${data.name}-${data.number}`.toLowerCase();
+    
+    // Simple cooldown to prevent spamming the exact same card record
     if (lastVerifiedKey.current === verificationKey) return;
+    lastVerifiedKey.current = verificationKey;
+
+    const finalCard: PokemonCard = {
+      id: Math.random().toString(36).substring(7),
+      name: data.name,
+      number: data.number,
+      set: "Custom/Detected",
+      rarity: "Detected Asset",
+      type: "Unknown",
+      marketValue: "$--.--",
+      imageUrl: `https://placehold.co/400x560/1e293b/white?text=${data.name}+${data.number}`,
+      scanDate: new Date().toLocaleDateString()
+    };
+
+    setScanResult({ name: finalCard.name, price: "--" });
+    onCardDetected(finalCard);
     
-    setIsVerifying(true);
-    const { name, number } = data;
-    
-    let match = SURGING_SPARKS_DATA.find(c => 
-      c.name.toLowerCase() === name.toLowerCase() && 
-      c.number.includes(number)
-    );
-
-    try {
-      if (!match) {
-        const aiResponse = await manualCardLookup(`${name} pokemon card #${number} tcg market price`);
-        if (aiResponse && aiResponse.name && aiResponse.set && aiResponse.set !== "Unknown Set") {
-          match = aiResponse as any;
-        }
-      }
-
-      if (match) {
-        const finalCard: PokemonCard = {
-          id: Math.random().toString(36).substring(7),
-          name: match.name,
-          number: match.number,
-          set: match.set,
-          rarity: match.rarity || 'Verified Asset',
-          type: match.type || 'Unknown',
-          marketValue: match.marketValue || '$--.--',
-          imageUrl: match.imageUrl || `https://placehold.co/400x560/1e293b/white?text=${match.name}+${match.number}`,
-          scanDate: new Date().toLocaleDateString()
-        };
-
-        lastVerifiedKey.current = verificationKey;
-        setScanResult({ name: finalCard.name, price: finalCard.marketValue || '$??' });
-        onCardDetected(finalCard);
-        
-        setTimeout(() => {
-          setScanResult(null);
-          setIsVerifying(false);
-          setCorners(null);
-          setIdentificationStartTime(null);
-        }, 3500);
-      } else {
-        setIsVerifying(false);
-      }
-    } catch (e) {
-      setIsVerifying(false);
-    }
+    setTimeout(() => {
+      setScanResult(null);
+      setCorners(null);
+      setDetectedData(null);
+    }, 2000);
   };
 
   useEffect(() => {
     let interval: number;
-    if (isScanning && cvReady && !isVerifying && !scanResult) {
+    if (isScanning && cvReady && !scanResult) {
       interval = window.setInterval(async () => {
         detectCardWithCV();
 
-        if (corners && !isProcessing && !isVerifying) {
+        if (corners && !isProcessing) {
           setIsProcessing(true);
           const video = videoRef.current!;
           const cardCanvas = cardCanvasRef.current!;
           const cCtx = cardCanvas.getContext('2d');
           
           if (cCtx) {
-            // High-Res extraction from the locked perspective
             const minX = Math.min(corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x);
             const maxX = Math.max(corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x);
             const minY = Math.min(corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y);
@@ -291,27 +233,30 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const result = await extractNameLocally(cardCanvas);
             setDetectedData(result);
             if (result && result.name && result.number) {
-              verifyAndVault(result);
+              instantVault(result);
+            } else {
+              // If OCR fails on this specific perspective, clear corners to try a new snap immediately
+              setCorners(null);
             }
           }
           setIsProcessing(false);
         }
-      }, 400);
+      }, 300);
     }
     return () => clearInterval(interval);
-  }, [isScanning, cvReady, isVerifying, corners, isProcessing, scanResult]);
+  }, [isScanning, cvReady, corners, isProcessing, scanResult]);
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
-      {/* HUD: Perspective Locked Mesh */}
+      {/* HUD: Unconstrained Perspective Mesh */}
       {corners && viewBox.w > 0 && !scanResult && (
         <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
              <path 
                 d={`M ${corners.tl.x} ${corners.tl.y} L ${corners.tr.x} ${corners.tr.y} L ${corners.br.x} ${corners.br.y} L ${corners.bl.x} ${corners.bl.y} Z`}
-                className={`fill-transparent stroke-[4px] transition-all duration-300 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,1)]' : 'stroke-white/60 animate-pulse'}`}
+                className={`fill-transparent stroke-[4px] transition-all duration-300 ${detectedData?.name ? 'stroke-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,1)]' : 'stroke-white/60'}`}
              />
              
              {[corners.tl, corners.tr, corners.bl, corners.br].map((p, i) => (
@@ -319,89 +264,58 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
              ))}
           </svg>
 
-          {/* Sync Timer Bar */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 translate-y-32 w-48 bg-slate-900/80 backdrop-blur-xl border border-white/10 p-1.5 rounded-full shadow-2xl overflow-hidden">
-             <div 
-                className="h-1 bg-cyan-400 rounded-full transition-all duration-100 ease-linear shadow-[0_0_10px_rgba(34,211,238,1)]" 
-                style={{ width: `${lockProgress}%` }}
-             />
-             <div className="mt-2 text-center text-[7px] font-orbitron font-black text-cyan-400 uppercase tracking-widest">
-                PERSPECTIVE_LOCK_SESSION
-             </div>
-          </div>
-
           <div 
             style={{ left: `${(corners.tl.x / viewBox.w) * 100}%`, top: `${(corners.tl.y / viewBox.h) * 100}%` }}
             className="absolute -translate-y-24 translate-x-4 flex flex-col gap-2 scale-90 sm:scale-100"
           >
              <div className="flex gap-2">
                 <span className={`px-3 py-1.5 text-[11px] font-orbitron font-black uppercase rounded shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
-                  {detectedData?.name || 'ANALYZING_CORE...'}
+                  {detectedData?.name || 'EXTRACTING...'}
                 </span>
              </div>
-             {isProcessing && (
-                <div className="bg-cyan-500/20 backdrop-blur-xl border border-cyan-500/30 px-3 py-1.5 rounded-lg flex items-center gap-2">
-                   <div className="w-2 h-2 bg-cyan-400 rounded-full animate-ping"></div>
-                   <span className="text-[9px] font-orbitron text-cyan-400 font-bold uppercase tracking-widest">Warping_Visual_Buffer_</span>
-                </div>
-             )}
           </div>
         </div>
       )}
 
-      {/* Success/Verification Screens */}
+      {/* Instant Success Screen */}
       <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-50">
-        {isVerifying && !scanResult && (
-            <div className="flex flex-col items-center animate-in fade-in zoom-in duration-300">
-                <div className="w-32 h-32 border-4 border-cyan-400 border-solid border-t-transparent rounded-full animate-spin shadow-[0_0_80px_rgba(34,211,238,0.3)]"></div>
-                <div className="mt-12 text-cyan-400 font-orbitron font-black text-2xl tracking-[0.6em] animate-pulse uppercase">Asset_Registry_Check</div>
-            </div>
-        )}
-
         {scanResult && (
-           <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-green-500/50 p-20 rounded-[6rem] shadow-[0_0_200px_rgba(34,197,94,0.3)] animate-in zoom-in-90 duration-500 text-center relative overflow-hidden">
-              <div className="w-24 h-24 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-8 shadow-[0_0_60px_rgba(34,197,94,0.5)] animate-bounce">
-                  <svg className="w-14 h-14 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
+           <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-300 text-center relative overflow-hidden">
+              <div className="w-20 h-20 bg-cyan-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-[0_0_40px_rgba(34,211,238,0.5)]">
+                  <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
               </div>
               <div className="relative z-10">
-                <div className="text-5xl font-orbitron font-black text-white mb-3 uppercase tracking-tighter drop-shadow-2xl">{scanResult.name}</div>
-                <div className="text-4xl font-orbitron text-green-400 font-bold tracking-tight mb-8">{scanResult.price}</div>
-                <div className="bg-green-500/20 text-green-400 py-3 px-10 rounded-full border border-green-500/30 inline-block">
-                    <span className="text-[12px] font-orbitron font-black uppercase tracking-[0.4em]">Vault_Secured</span>
+                <div className="text-4xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter drop-shadow-2xl">{scanResult.name}</div>
+                <div className="bg-cyan-500/20 text-cyan-400 py-2 px-8 rounded-full border border-cyan-500/30 inline-block">
+                    <span className="text-[10px] font-orbitron font-black uppercase tracking-[0.4em]">VAULTED</span>
                 </div>
               </div>
            </div>
         )}
       </div>
 
-      {/* Bottom Dashboard */}
+      {/* Telemetry */}
       <div className="absolute bottom-10 left-0 w-full px-10 flex justify-between items-end">
         <div className="bg-slate-950/90 backdrop-blur-3xl p-6 rounded-[2.5rem] border border-white/10 shadow-3xl min-w-[240px]">
            <div className="flex items-center gap-4 mb-4">
              <div className={`w-3 h-3 rounded-full ${cvReady ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
              <span className="text-[11px] font-orbitron font-black text-white uppercase tracking-widest">
-                {corners ? 'PERSPECTIVE_LOCKED' : 'SEEKING_TARGET'}
+                RAPID_VAULT_MODE
              </span>
            </div>
-           <div className="space-y-2">
-             <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Search Integrity:</span>
-                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">STABLE_v2</span>
-             </div>
+           <div className="space-y-1">
              <div className="flex justify-between items-center">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Current Action:</span>
-                <span className={`text-[8px] font-black uppercase tracking-tight ${corners ? 'text-green-400' : 'text-slate-600'}`}>
-                   {corners ? 'IDENTIFYING_RETRY' : 'ANALYZING_FEED'}
-                </span>
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Core Status:</span>
+                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">{corners ? 'PERSPECTIVE_LOCKED' : 'SEEKING_TARGET'}</span>
              </div>
            </div>
         </div>
 
         <button 
             onClick={handleReset}
-            className="pointer-events-auto bg-slate-900/90 hover:bg-red-600 backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 group"
+            className="pointer-events-auto bg-slate-900/90 hover:bg-red-600 backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90"
         >
-            <svg className="w-8 h-8 text-white group-hover:rotate-180 transition-transform duration-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
         </button>
