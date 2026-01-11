@@ -24,12 +24,18 @@ const SCAN_STATUS_MESSAGES = [
   "FETCHING MARKET DATA..."
 ];
 
+// Target regions derived from ocrService.ts logic for a 400x560 canvas
+const TARGET_REGIONS = {
+  name: { x: '5%', y: '2%', w: '65%', h: '9%' },
+  number: { x: '2%', y: '88%', w: '40%', h: '10%' }
+};
+
 const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScanning }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cardCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const frozenFrameRef = useRef<any>(null); // Mat for the frozen frame
+  const frozenFrameRef = useRef<any>(null); 
   const lockedCornersRef = useRef<CardCorners | null>(null);
   
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -98,7 +104,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       const imgData = event.target?.result as string;
       const img = new Image();
       img.onload = () => {
-        // Prepare canvas with the uploaded image
         if (cardCanvasRef.current) {
           const ctx = cardCanvasRef.current.getContext('2d');
           if (ctx) {
@@ -108,13 +113,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
         }
         
-        // Enter "Frozen" scan state manually
         setIsFrozen(true);
         setShowWarped(true);
-        setFreezeCountdown(10); // Longer countdown for manual uploads
+        setFreezeCountdown(10);
         freezeStartTimeRef.current = Date.now();
         
-        // Trigger Deep Scan
         const base64 = imgData.split(',')[1];
         processUploadedImage(base64);
       };
@@ -139,6 +142,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           setScanResult(null);
           setIsFrozen(false);
           setShowWarped(false);
+          if (fileInputRef.current) fileInputRef.current.value = "";
         }, 2000);
       }
     } catch (e) {
@@ -160,6 +164,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   useEffect(() => {
     const lerp = (s: number, e: number, f: number) => s + (e - s) * f;
     const anim = () => {
+      // While frozen, we do NOT adjust visual corners or viewBox to ensure a completely static "locked" view
       if (!isFrozen) {
         if (targetCorners) {
           setVisualCorners(p => p ? {
@@ -183,9 +188,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   useEffect(() => {
     let timer: number;
     if (isFrozen) {
+      if (videoRef.current) videoRef.current.pause(); // Visual freeze of the background stream
       timer = window.setInterval(() => {
         const elapsed = (Date.now() - freezeStartTimeRef.current) / 1000;
-        const maxTime = fileInputRef.current?.value ? 10 : 5;
+        const isUpload = !!fileInputRef.current?.value;
+        const maxTime = isUpload ? 10 : 5;
         const remaining = Math.max(0, maxTime - Math.floor(elapsed));
         setFreezeCountdown(remaining);
         
@@ -200,9 +207,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             frozenFrameRef.current.delete();
             frozenFrameRef.current = null;
           }
+          if (videoRef.current) videoRef.current.play();
           if (fileInputRef.current) fileInputRef.current.value = "";
         }
       }, 800);
+    } else {
+      if (videoRef.current) videoRef.current.play();
     }
     return () => clearInterval(timer);
   }, [isFrozen, scanResult]);
@@ -292,7 +302,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   };
 
   const processFrame = async () => {
-    // If it's a manual upload, the canvas is already drawn and we don't warp anymore
     if (fileInputRef.current?.value) return;
 
     const corners = lockedCornersRef.current || targetCorners;
@@ -354,22 +363,65 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       
       <div className={`absolute inset-0 z-10 flex items-center justify-center transition-all duration-500 transform ${showWarped ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
           <div className="relative w-full h-full max-w-[90vw] max-h-[85vh] flex items-center justify-center">
-            <canvas 
-              ref={cardCanvasRef} 
-              className={`w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.5)] border-4 rounded-3xl transition-all duration-500 ${isFrozen ? 'border-cyan-400 brightness-110 scale-[1.02]' : 'border-white/20'}`}
-            />
-            
-            {isFrozen && (
-              <div className="absolute inset-0 overflow-hidden rounded-3xl pointer-events-none">
-                 <div className="absolute w-full h-[3px] bg-cyan-400 shadow-[0_0_20px_rgba(34,211,238,1)] animate-scanline-sweep z-30" />
-                 <div className="absolute inset-0 bg-cyan-400/5 animate-pulse" />
-              </div>
-            )}
+            <div className="relative w-full h-full flex items-center justify-center group">
+              <canvas 
+                ref={cardCanvasRef} 
+                className={`w-full h-full object-contain shadow-[0_0_100px_rgba(34,211,238,0.5)] border-4 rounded-3xl transition-all duration-500 ${isFrozen ? 'border-cyan-400 brightness-110' : 'border-white/20'}`}
+              />
+              
+              {/* Telemetry Search Boxes (Visible when frozen) */}
+              {isFrozen && (
+                <div className="absolute inset-0 pointer-events-none z-30">
+                  <div className="relative w-full h-full flex items-center justify-center">
+                    {/* We must wrap the boxes in a container that matches the object-contain aspect ratio of the canvas */}
+                    <div className="relative aspect-[400/560] h-full max-h-full">
+                      {/* Name Search Box */}
+                      <div 
+                        className="absolute border-2 border-cyan-400/60 bg-cyan-400/5 rounded shadow-[0_0_15px_rgba(34,211,238,0.4)] transition-opacity duration-300"
+                        style={{ 
+                          left: TARGET_REGIONS.name.x, 
+                          top: TARGET_REGIONS.name.y, 
+                          width: TARGET_REGIONS.name.w, 
+                          height: TARGET_REGIONS.name.h 
+                        }}
+                      >
+                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-1 -translate-y-full">NAME_SECTOR</div>
+                        <div className="absolute inset-0 animate-pulse bg-cyan-400/10"></div>
+                      </div>
+
+                      {/* Number Search Box */}
+                      <div 
+                        className="absolute border-2 border-cyan-400/60 bg-cyan-400/5 rounded shadow-[0_0_15px_rgba(34,211,238,0.4)] transition-opacity duration-300"
+                        style={{ 
+                          left: TARGET_REGIONS.number.x, 
+                          top: TARGET_REGIONS.number.y, 
+                          width: TARGET_REGIONS.number.w, 
+                          height: TARGET_REGIONS.number.h 
+                        }}
+                      >
+                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-1 -translate-y-full">SET_NUM_SECTOR</div>
+                        <div className="absolute inset-0 animate-pulse bg-cyan-400/10"></div>
+                      </div>
+
+                      {/* Card Outline confirmation */}
+                      <div className="absolute inset-0 border-2 border-cyan-400 animate-pulse rounded-3xl opacity-30"></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {isFrozen && (
+                <div className="absolute inset-0 overflow-hidden rounded-3xl pointer-events-none z-20">
+                   <div className="absolute w-full h-[3px] bg-cyan-400 shadow-[0_0_20px_rgba(34,211,238,1)] animate-scanline-sweep" />
+                   <div className="absolute inset-0 bg-cyan-400/5" />
+                </div>
+              )}
+            </div>
 
             <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/10 to-transparent h-24 w-full animate-scanline pointer-events-none" />
             
             {isFrozen && (
-               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-slate-950/20 backdrop-blur-[1px]">
+               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-slate-950/20 backdrop-blur-[1px] z-40">
                   <div className="relative mb-8">
                      <div className="w-24 h-24 border-4 border-cyan-400/20 rounded-full" />
                      <div className="absolute inset-0 w-24 h-24 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin" />
@@ -419,9 +471,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         </div>
       )}
 
-      {/* Action Controls */}
       <div className="absolute bottom-10 left-0 right-0 z-50 px-10 flex justify-between items-center pointer-events-none">
-        {/* Upload Button */}
         {!isFrozen && (
           <button 
             onClick={() => fileInputRef.current?.click()} 
@@ -433,7 +483,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           </button>
         )}
         
-        {/* Torch Button */}
         {torchSupported && !isFrozen && (
           <button 
             onClick={toggleTorch} 
