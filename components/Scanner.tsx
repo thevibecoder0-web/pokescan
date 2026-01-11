@@ -3,6 +3,18 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { identifyPokemonCard } from '../services/geminiService';
 import { PokemonCard } from '../types';
 
+interface Point {
+  x: number;
+  y: number;
+}
+
+interface Corners {
+  tl: Point;
+  tr: Point;
+  bl: Point;
+  br: Point;
+}
+
 interface ScannerProps {
   onCardDetected: (card: PokemonCard) => void;
   isScanning: boolean;
@@ -12,16 +24,25 @@ interface ScannerProps {
 const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScanning }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const processCanvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [detectedName, setDetectedName] = useState<string | null>(null);
+  
+  // Real-time tracking state
+  const [corners, setCorners] = useState<Corners>({
+    tl: { x: 20, y: 20 },
+    tr: { x: 80, y: 20 },
+    bl: { x: 20, y: 80 },
+    br: { x: 80, y: 80 }
+  });
 
   const startCamera = async () => {
     try {
       setError(null);
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
       setStream(mediaStream);
@@ -40,6 +61,78 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       setStream(null);
     }
   };
+
+  // Algorithm to find the card in the frame
+  useEffect(() => {
+    if (!isScanning) return;
+
+    let animationFrameId: number;
+    const processFrame = () => {
+      if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+        const video = videoRef.current;
+        const canvas = processCanvasRef.current;
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+
+        // Downsample for performance
+        const width = 160;
+        const height = (video.videoHeight / video.videoWidth) * width;
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(video, 0, 0, width, height);
+
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const data = imageData.data;
+        
+        let minX = width, maxX = 0, minY = height, maxY = 0;
+        let found = false;
+
+        // Simple edge/contrast detection to find the "brightest" rectangular-ish object (the card)
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            const brightness = (r + g + b) / 3;
+            
+            // Threshold for typical card highlights/borders in contrast to background
+            if (brightness > 140) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+              found = true;
+            }
+          }
+        }
+
+        if (found && (maxX - minX) > width * 0.2) {
+          // Normalize to percentages and add some smoothing/padding
+          const targetCorners = {
+            tl: { x: (minX / width) * 100, y: (minY / height) * 100 },
+            tr: { x: (maxX / width) * 100, y: (minY / height) * 100 },
+            bl: { x: (minX / width) * 100, y: (maxY / height) * 100 },
+            br: { x: (maxX / width) * 100, y: (maxY / height) * 100 }
+          };
+
+          // Basic jitter reduction (lerp)
+          setCorners(prev => ({
+            tl: { x: prev.tl.x + (targetCorners.tl.x - prev.tl.x) * 0.2, y: prev.tl.y + (targetCorners.tl.y - prev.tl.y) * 0.2 },
+            tr: { x: prev.tr.x + (targetCorners.tr.x - prev.tr.x) * 0.2, y: prev.tr.y + (targetCorners.tr.y - prev.tr.y) * 0.2 },
+            bl: { x: prev.bl.x + (targetCorners.bl.x - prev.bl.x) * 0.2, y: prev.bl.y + (targetCorners.bl.y - prev.bl.y) * 0.2 },
+            br: { x: prev.br.x + (targetCorners.br.x - prev.br.x) * 0.2, y: prev.br.y + (targetCorners.br.y - prev.br.y) * 0.2 },
+          }));
+        }
+      }
+      animationFrameId = requestAnimationFrame(processFrame);
+    };
+
+    processFrame();
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [isScanning]);
 
   useEffect(() => {
     if (isScanning) {
@@ -65,18 +158,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       
       const fullResImage = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
-      
       const result = await identifyPokemonCard(fullResImage);
 
       if (result && result.name && result.name.toLowerCase() !== 'unknown') {
-        // Display the text found in the top left
         setDetectedName(result.name);
-        
-        /** 
-         * Note: Per user request, we aren't "doing anything" right now 
-         * except displaying the name. The auto-add to vault is disabled here.
-         * If we wanted to add it, we'd call onCardDetected(newCard).
-         */
       } else {
         setDetectedName("Text Not Found");
         setTimeout(() => setDetectedName(null), 3000);
@@ -84,6 +169,9 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     }
     setLoading(false);
   }, [loading]);
+
+  // Dynamic CSS Polygon for perspective distortion
+  const clipPath = `polygon(${corners.tl.x}% ${corners.tl.y}%, ${corners.tr.x}% ${corners.tr.y}%, ${corners.br.x}% ${corners.br.y}%, ${corners.bl.x}% ${corners.bl.y}%)`;
 
   return (
     <div className="relative w-full overflow-hidden rounded-3xl shadow-2xl bg-black border-2 border-slate-800 flex flex-col">
@@ -100,31 +188,41 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               ref={videoRef}
               autoPlay
               playsInline
-              className="w-full h-full object-cover"
+              className="w-full h-full object-cover opacity-80"
             />
             
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-              <div className={`relative w-[70%] sm:w-[35%] aspect-[2.5/3.5] border-2 transition-all duration-300 rounded-3xl ${
-                  loading ? 'border-yellow-400 scale-105 shadow-[0_0_50px_rgba(250,204,21,0.5)]' : 'border-white/20 shadow-[0_0_30px_rgba(255,255,255,0.1)]'
-              }`}>
-                {/* Frame Corners */}
-                <div className="absolute -top-1 -left-1 w-10 h-10 border-t-4 border-l-4 border-white rounded-tl-2xl"></div>
-                <div className="absolute -top-1 -right-1 w-10 h-10 border-t-4 border-r-4 border-white rounded-tr-2xl"></div>
-                <div className="absolute -bottom-1 -left-1 w-10 h-10 border-b-4 border-l-4 border-white rounded-bl-2xl"></div>
-                <div className="absolute -bottom-1 -right-1 w-10 h-10 border-b-4 border-r-4 border-white rounded-br-2xl"></div>
-                
-                {/* Top-Left Label (Displays extracted Card Name) */}
-                <div className="absolute -top-10 left-0 bg-slate-950/90 backdrop-blur-xl px-4 py-1.5 rounded-lg border border-white/20 whitespace-nowrap shadow-2xl flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : 'bg-red-600'}`}></div>
-                  <span className="text-[10px] font-orbitron font-bold uppercase tracking-[0.1em] text-white">
-                    {loading ? 'Reading Top-Left...' : (detectedName || 'Position Card')}
-                  </span>
-                </div>
+            {/* Dynamic Card Border Overlay */}
+            <div className="absolute inset-0 pointer-events-none">
+              {/* Perspective Frame */}
+              <div 
+                className={`absolute inset-0 border-[3px] transition-colors duration-300 ${loading ? 'border-yellow-400' : 'border-white/40'}`}
+                style={{ clipPath, backgroundColor: loading ? 'rgba(250,204,21,0.1)' : 'transparent' }}
+              >
+                {/* Visual corners for high-tech look */}
+                <div style={{ position: 'absolute', top: `${corners.tl.y}%`, left: `${corners.tl.x}%`, transform: 'translate(-50%, -50%)' }} className="w-4 h-4 border-t-4 border-l-4 border-red-600"></div>
+                <div style={{ position: 'absolute', top: `${corners.tr.y}%`, left: `${corners.tr.x}%`, transform: 'translate(50%, -50%)' }} className="w-4 h-4 border-t-4 border-r-4 border-red-600"></div>
+                <div style={{ position: 'absolute', top: `${corners.bl.y}%`, left: `${corners.bl.x}%`, transform: 'translate(-50%, 50%)' }} className="w-4 h-4 border-b-4 border-l-4 border-red-600"></div>
+                <div style={{ position: 'absolute', top: `${corners.br.y}%`, left: `${corners.br.x}%`, transform: 'translate(50%, 50%)' }} className="w-4 h-4 border-b-4 border-r-4 border-red-600"></div>
+              </div>
 
-                {/* Bottom-Left Version Info */}
-                <div className="absolute -bottom-10 left-0 text-[9px] font-orbitron font-bold text-slate-500 uppercase tracking-widest px-1">
-                   SV8 v1.0.5 - DEV BUILD
-                </div>
+              {/* Top-Left Label following the card's TL corner */}
+              <div 
+                className="absolute bg-slate-950/90 backdrop-blur-xl px-4 py-1.5 rounded-lg border border-white/20 whitespace-nowrap shadow-2xl flex items-center gap-2 transition-all duration-100"
+                style={{ 
+                  top: `calc(${corners.tl.y}% - 45px)`, 
+                  left: `${corners.tl.x}%`,
+                  opacity: (corners.tl.y > 5 && corners.tl.x > 5) ? 1 : 0
+                }}
+              >
+                <div className={`w-2 h-2 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : 'bg-red-600'}`}></div>
+                <span className="text-[10px] font-orbitron font-bold uppercase tracking-[0.1em] text-white">
+                  {loading ? 'Reading Top-Left...' : (detectedName || 'Position Card')}
+                </span>
+              </div>
+
+              {/* Bottom-Left Version Info (Fixed to screen bottom-left as requested) */}
+              <div className="absolute bottom-4 left-4 text-[9px] font-orbitron font-bold text-slate-500 uppercase tracking-widest px-1">
+                 SV8 v1.0.6 - DEV BUILD
               </div>
             </div>
 
@@ -160,6 +258,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         )}
       </div>
       <canvas ref={canvasRef} className="hidden" />
+      <canvas ref={processCanvasRef} className="hidden" />
     </div>
   );
 };
