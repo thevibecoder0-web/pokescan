@@ -8,9 +8,10 @@ interface ScannerProps {
   onCardDetected: (card: PokemonCard) => void;
   isScanning: boolean;
   setIsScanning: (val: boolean) => void;
+  onDeepScanRequest?: (image: string) => void;
 }
 
-const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScanning }) => {
+const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScanning, onDeepScanRequest }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -27,7 +28,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { 
           facingMode: 'environment', 
-          width: { ideal: 1280 }, // 720p is often faster for real-time OCR than 1080p
+          width: { ideal: 1280 }, 
           height: { ideal: 720 } 
         },
         audio: false,
@@ -55,7 +56,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return () => stopCamera();
   }, [isScanning]);
 
-  // HIGH PERFORMANCE CONTINUOUS OCR LOOP
   useEffect(() => {
     let interval: number;
     if (isScanning && !loading) {
@@ -68,16 +68,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         const context = canvas.getContext('2d', { alpha: false });
 
         if (context && video.videoWidth > 0) {
-          // Sync canvas size with video
           if (canvas.width !== video.videoWidth) {
               canvas.width = video.videoWidth;
               canvas.height = video.videoHeight;
           }
-          
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          
           try {
-            // New optimized ROI-based extraction
             const result = await extractNameLocally(canvas);
             setDetectedData(result);
           } catch (e) {
@@ -85,10 +81,27 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
         }
         setIsProcessingLocal(false);
-      }, 300); // Increased frequency due to ROI performance gains
+      }, 300);
     }
     return () => clearInterval(interval);
   }, [isScanning, loading, isProcessingLocal]);
+
+  const handleDeepScan = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!videoRef.current || !canvasRef.current || !onDeepScanRequest) return;
+    
+    setFlash(true);
+    setTimeout(() => setFlash(false), 150);
+    
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+    if (context && videoRef.current) {
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      context.drawImage(videoRef.current, 0, 0);
+      onDeepScanRequest(canvas.toDataURL('image/jpeg', 0.9));
+    }
+  };
 
   const handleCaptureAndBind = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current || loading) return;
@@ -129,13 +142,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   const getReticleStyle = () => {
     if (!detectedData?.bbox || !videoRef.current) return { display: 'none' };
-    
     const video = videoRef.current;
     const { x0, y0, x1, y1 } = detectedData.bbox;
-    
     const scaleX = 100 / video.videoWidth;
     const scaleY = 100 / video.videoHeight;
-
     return {
       left: `${x0 * scaleX}%`,
       top: `${y0 * scaleY}%`,
@@ -160,9 +170,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         {flash && <div className="absolute inset-0 z-50 bg-white/70 pointer-events-none" />}
       </div>
 
-      {/* ROI VISUAL GUIDES */}
       <div className="absolute inset-0 z-10 pointer-events-none">
-        {/* Nameplate Scan Zone Guide */}
         <div className="absolute top-0 left-0 w-full h-[18%] border-b border-cyan-500/30 bg-cyan-500/5 backdrop-blur-[2px]">
             <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-4 py-1 bg-cyan-900/60 rounded-full border border-cyan-400/30">
                 <span className="text-[7px] font-orbitron font-black text-cyan-400 tracking-[0.4em] uppercase">Primary_Name_Sensor</span>
@@ -180,7 +188,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           </div>
         )}
 
-        {/* Scan Pulse Line */}
         {!loading && (
           <div className="absolute top-0 left-0 w-full h-[18%] overflow-hidden">
              <div className="w-full h-[2px] bg-cyan-400/50 shadow-[0_0_10px_cyan] animate-scanline"></div>
@@ -202,6 +209,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                   </span>
                 </div>
             </div>
+          </div>
+
+          <div className="absolute bottom-32 left-1/2 -translate-x-1/2 flex gap-4 pointer-events-auto">
+            <button 
+              onClick={handleDeepScan}
+              className="px-8 py-4 bg-slate-950/80 backdrop-blur-md border border-cyan-500/40 text-cyan-400 font-orbitron font-black text-[10px] uppercase tracking-widest rounded-2xl hover:bg-cyan-500 hover:text-slate-950 transition-all active:scale-95 shadow-2xl"
+            >
+              Neural Deep Scan (Pro)
+            </button>
           </div>
 
           {scanResult && !loading && (

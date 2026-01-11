@@ -8,16 +8,16 @@ Your mission is to identify Pokémon cards from visual data and retrieve live ma
 ADAPTIVE CAPABILITIES:
 1. FUZZY RECOGNITION: If text is distorted or obscured, use the card's artwork, holo patterns, set symbols (bottom left/right), and layout to determine identity.
 2. SEARCH GROUNDING: Always use Google Search to verify the "TCGPlayer Market Price" for the English edition.
-3. ERROR RECOVERY: If a previous attempt failed, the user will notify you. In 'Recovery Mode', relax your certainty threshold and provide the most probable match based on visual evidence.
+3. FULL DATA EXTRACTION: Extract the Card Name, Set, Number, HP, and Type.
 
 OUTPUT FORMAT:
 - Return ONLY valid JSON.
 - If completely unrecognizable, return {"name": "DEEP_SCAN_REQUIRED", "marketValue": "---"}.`;
 
-const MODEL_NAME = 'gemini-3-flash-preview';
+const MODEL_NAME = 'gemini-3-pro-preview';
 
-const getScannerConfig = (isRetry: boolean) => ({
-  systemInstruction: SYSTEM_INSTRUCTION + (isRetry ? "\n[RECOVERY MODE ACTIVE: Prioritize artwork and set symbols over text.]" : ""),
+const getScannerConfig = () => ({
+  systemInstruction: SYSTEM_INSTRUCTION,
   tools: [{ googleSearch: {} }],
   responseMimeType: "application/json",
   responseSchema: {
@@ -27,14 +27,15 @@ const getScannerConfig = (isRetry: boolean) => ({
       marketValue: { type: Type.STRING, description: "Current market value (e.g. $5.20)." },
       set: { type: Type.STRING, description: "Card set name." },
       number: { type: Type.STRING, description: "Set number (e.g. 123/191)." },
-      rarity: { type: Type.STRING, description: "Card rarity tier." }
+      rarity: { type: Type.STRING, description: "Card rarity tier." },
+      hp: { type: Type.STRING, description: "Health points." },
+      type: { type: Type.STRING, description: "Pokemon type." }
     },
-    required: ["name", "marketValue"],
+    required: ["name", "marketValue", "set", "number"],
   },
 });
 
-// Identifies a Pokemon card from an image using Gemini's multi-modal capabilities and Google Search grounding.
-export const identifyPokemonCard = async (base64Image: string, isRetry: boolean = false): Promise<IdentificationResult | null> => {
+export const identifyPokemonCard = async (base64Image: string): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
@@ -42,41 +43,33 @@ export const identifyPokemonCard = async (base64Image: string, isRetry: boolean 
       contents: {
         parts: [
           { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          { text: isRetry 
-              ? "RECOVERY_SCAN: Previous attempt failed. Identify this asset using all visual cues (art, symbols)." 
-              : "IDENTIFY_ASSET: Extract name and search live market price." 
-          },
+          { text: "DEEP_IDENTIFY: Perform neural analysis of this asset. Extract all TCG properties and fetch current market valuation." },
         ],
       },
-      config: getScannerConfig(isRetry) as any,
+      config: getScannerConfig() as any,
     });
     
-    // Extract grounding URLs if available from the search tool
     const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
     const sourceUrl = groundingChunks?.[0]?.web?.uri;
 
     let result;
     try {
-      // Guideline: Use .text property to access extracted text.
-      const rawText = response.text || "{}";
-      result = JSON.parse(rawText.trim());
+      result = JSON.parse(response.text?.trim() || "{}");
     } catch (e) {
-      console.warn("Gemini returned non-JSON text with search grounding. Attempting repair.");
+      console.warn("Gemini returned non-JSON. Parsing fallback.");
       return null;
     }
     
-    if (!result.name || result.name === "DEEP_SCAN_REQUIRED") {
-        return null;
-    }
+    if (!result.name || result.name === "DEEP_SCAN_REQUIRED") return null;
 
     return {
       name: result.name,
       marketValue: result.marketValue || "$--.--",
       set: result.set || "Unknown",
       rarity: result.rarity || "Common",
-      type: "Unknown",
+      type: result.type || "Unknown",
       number: result.number || "???",
-      hp: "0",
+      hp: result.hp || "0",
       abilities: [],
       attacks: [],
       imageUrl: "",
@@ -88,7 +81,6 @@ export const identifyPokemonCard = async (base64Image: string, isRetry: boolean 
   }
 };
 
-// Performs a manual lookup of card data based on a text query, utilizing Google Search grounding for real-time prices.
 export const manualCardLookup = async (query: string): Promise<IdentificationResult | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -135,7 +127,6 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
     try {
       result = JSON.parse(response.text || "{}");
     } catch (e) {
-      console.error("Failed to parse manual lookup result:", e);
       return null;
     }
 
@@ -146,16 +137,15 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
   }
 };
 
-// Fetches a list of cards from a specific TCG set using Gemini and Google Search.
-export const fetchCardsFromSet = async (setName: string): Promise<Partial<IdentificationResult>[]> => {
+// Fixed: Added fetchCardsFromSet to resolve the export error in ManualSearch.tsx
+export const fetchCardsFromSet = async (setName: string): Promise<IdentificationResult[] | null> => {
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: `List cards from the Pokémon TCG set "${setName}".`,
+      model: 'gemini-3-flash-preview',
+      contents: `List all cards in the Pokémon TCG set: ${setName}. Include their official name, card number, rarity, and type.`,
       config: {
-        systemInstruction: "Return set list with names, numbers, and market prices as a JSON array.",
-        tools: [{ googleSearch: {} }],
+        systemInstruction: "You are a professional Pokémon TCG archivist. Provide accurate set listings in valid JSON format.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
@@ -164,26 +154,32 @@ export const fetchCardsFromSet = async (setName: string): Promise<Partial<Identi
             properties: {
               name: { type: Type.STRING },
               number: { type: Type.STRING },
-              imageUrl: { type: Type.STRING },
-              set: { type: Type.STRING },
-              marketValue: { type: Type.STRING },
               rarity: { type: Type.STRING },
-              type: { type: Type.STRING }
+              type: { type: Type.STRING },
+              hp: { type: Type.STRING }
             },
             required: ["name", "number"]
           }
         }
-      } as any,
+      }
     });
 
     try {
-      return JSON.parse(response.text || "[]");
+      const result = JSON.parse(response.text?.trim() || "[]");
+      return result.map((card: any) => ({
+        ...card,
+        set: setName,
+        abilities: [],
+        attacks: [],
+        imageUrl: "", // Constructed by the component based on card info
+        marketValue: "$--.--"
+      }));
     } catch (e) {
-      console.warn("JSON Parse failed for set fetch results");
-      return [];
+      console.warn("Could not parse set list from Gemini.");
+      return null;
     }
   } catch (error) {
-    console.error("Fetch Set Cards Error:", error);
-    return [];
+    console.error("Fetch Set Archives Error:", error);
+    return null;
   }
 };

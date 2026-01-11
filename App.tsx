@@ -3,16 +3,17 @@ import React, { useState, useEffect } from 'react';
 import Scanner from './components/Scanner';
 import CardItem from './components/CardItem';
 import ManualSearch from './components/ManualSearch';
+import ImageAnalyzer from './components/ImageAnalyzer';
 import { PokemonCard } from './types';
 
-type ViewMode = 'collection' | 'scanner' | 'manual';
+type ViewMode = 'collection' | 'scanner' | 'manual' | 'analyze';
 
 const App: React.FC = () => {
   const [collection, setCollection] = useState<PokemonCard[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('collection');
   const [searchQuery, setSearchQuery] = useState('');
+  const [pendingDeepScan, setPendingDeepScan] = useState<string | null>(null);
 
-  // Load collection from local storage on mount
   useEffect(() => {
     const saved = localStorage.getItem('poke_collection');
     if (saved) {
@@ -24,7 +25,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Save collection to local storage whenever it changes
   useEffect(() => {
     localStorage.setItem('poke_collection', JSON.stringify(collection));
   }, [collection]);
@@ -32,10 +32,16 @@ const App: React.FC = () => {
   const addCard = (card: PokemonCard) => {
     setCollection(prev => [card, ...prev]);
     setViewMode('collection');
+    setPendingDeepScan(null);
   };
 
   const removeCard = (id: string) => {
     setCollection(prev => prev.filter(card => card.id !== id));
+  };
+
+  const handleDeepScanRequest = (imageData: string) => {
+    setPendingDeepScan(imageData);
+    setViewMode('analyze');
   };
 
   const filteredCollection = collection.filter(card => 
@@ -45,7 +51,6 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen bg-slate-950 flex flex-col overflow-hidden">
-      {/* Top Header */}
       <header className="bg-slate-950/80 backdrop-blur-md border-b border-slate-800 px-4 py-4 z-50 shrink-0">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -60,19 +65,6 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
-            {viewMode === 'collection' && (
-              <div className="hidden sm:block relative">
-                <input
-                  type="text"
-                  placeholder="Filter Vault..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-full py-1.5 px-8 text-sm focus:outline-none focus:border-red-500 transition-colors w-40 md:w-64"
-                />
-                <svg className="absolute left-2.5 top-2 w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-              </div>
-            )}
-            
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setViewMode('scanner')}
@@ -85,13 +77,13 @@ const App: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setViewMode('manual')}
+                onClick={() => { setPendingDeepScan(null); setViewMode('analyze'); }}
                 className={`p-2 sm:px-4 sm:py-2 rounded-xl font-bold text-[11px] transition-all active:scale-95 flex flex-col sm:flex-row items-center gap-1 sm:gap-2 ${
-                  viewMode === 'manual' ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+                  viewMode === 'analyze' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                <span>LOOKUP</span>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
+                <span>PRO_ID</span>
               </button>
 
               <button
@@ -108,7 +100,6 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main View Area */}
       <main className={`flex-1 overflow-y-auto w-full flex flex-col ${viewMode === 'scanner' ? 'p-0 max-w-none' : 'px-4 py-6 max-w-7xl mx-auto'}`}>
         {viewMode === 'scanner' && (
           <div className="flex-1 w-full h-full animate-in fade-in duration-300">
@@ -116,7 +107,15 @@ const App: React.FC = () => {
                 isScanning={true} 
                 setIsScanning={(val) => !val && setViewMode('collection')} 
                 onCardDetected={addCard} 
+                onDeepScanRequest={handleDeepScanRequest}
             />
+          </div>
+        )}
+
+        {viewMode === 'analyze' && (
+          <div className="animate-in fade-in zoom-in duration-300">
+            <h2 className="text-3xl font-orbitron font-black text-white mb-8 tracking-tighter">NEURAL_DEEP_ANALYSIS</h2>
+            <ImageAnalyzer onAddCard={addCard} initialImage={pendingDeepScan} />
           </div>
         )}
 
@@ -137,13 +136,13 @@ const App: React.FC = () => {
                 <p className="text-slate-500 text-xs mt-1">Total Assets: {collection.length}</p>
               </div>
               
-              <div className="sm:hidden w-full relative">
+              <div className="w-full sm:w-auto relative">
                 <input
                   type="text"
-                  placeholder="Search collection..."
+                  placeholder="Filter Vault..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2 px-10 text-sm focus:outline-none focus:border-red-500"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2 px-10 text-sm focus:outline-none focus:border-red-500 transition-all sm:w-64"
                 />
                 <svg className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
               </div>
@@ -168,8 +167,8 @@ const App: React.FC = () => {
                   <button onClick={() => setViewMode('scanner')} className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-black rounded-lg transition-all shadow-lg active:scale-95 uppercase tracking-widest">
                     Scan Card
                   </button>
-                  <button onClick={() => setViewMode('manual')} className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black rounded-lg transition-all shadow-lg active:scale-95 uppercase tracking-widest">
-                    Search
+                  <button onClick={() => setViewMode('analyze')} className="px-5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-black rounded-lg transition-all shadow-lg active:scale-95 uppercase tracking-widest">
+                    AI Scan
                   </button>
                 </div>
               </div>
@@ -178,7 +177,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Mobile Navigation Footer */}
       <nav className="md:hidden bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 sticky bottom-0 left-0 right-0 z-50 shrink-0">
         <div className="flex justify-around items-center h-20 px-2">
           <button 
@@ -202,13 +200,13 @@ const App: React.FC = () => {
           </button>
 
           <button 
-            onClick={() => setViewMode('manual')}
-            className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-colors ${viewMode === 'manual' ? 'text-red-500' : 'text-slate-500'}`}
+            onClick={() => { setPendingDeepScan(null); setViewMode('analyze'); }}
+            className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-colors ${viewMode === 'analyze' ? 'text-cyan-500' : 'text-slate-500'}`}
           >
-            <div className={`p-2 rounded-xl ${viewMode === 'manual' ? 'bg-red-500/10' : ''}`}>
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+            <div className={`p-2 rounded-xl ${viewMode === 'analyze' ? 'bg-cyan-500/10' : ''}`}>
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2-2V10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
             </div>
-            <span className="text-[10px] font-bold uppercase tracking-tight">Lookup</span>
+            <span className="text-[10px] font-bold uppercase tracking-tight">PRO_ID</span>
           </button>
         </div>
       </nav>
