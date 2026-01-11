@@ -158,33 +158,39 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       </div>
 
       {/* Simplified HUD Overlay */}
-      <div className="relative z-10 w-full h-full flex flex-col justify-end items-center pointer-events-none p-10">
+      <div className="relative z-10 w-full h-full flex flex-col items-center pointer-events-none p-6">
           
-          {/* Card Name Display - Positioned at bottom center, clean and visible */}
-          <div className={`mb-12 transition-all duration-500 ${liveDetectedName || loading ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
-            <div className="bg-slate-950/60 backdrop-blur-3xl border border-white/10 px-10 py-5 rounded-[2rem] shadow-2xl text-center border-b-4 border-slate-900">
-                <span className="text-2xl sm:text-3xl font-orbitron font-black text-white tracking-tighter block truncate">
-                    {loading ? "IDENTIFYING..." : (liveDetectedName || "ALIGN CARD TOP")}
+          {/* ALWAYS VISIBLE NAME BOX - Raised by height offset */}
+          <div className="absolute top-[18%] -translate-y-full w-full max-w-sm px-6 transition-transform duration-500">
+            <div className="bg-slate-950/80 backdrop-blur-3xl border border-white/10 px-8 py-5 rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-center border-t-2 border-white/5">
+                <span className="text-xl sm:text-2xl font-orbitron font-black text-white tracking-tighter block truncate">
+                    {loading ? "SCANNING DATA..." : (liveDetectedName || "AWAITING TARGET")}
                 </span>
-                {!loading && liveDetectedName && (
-                  <div className="mt-1 flex items-center justify-center gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></div>
-                    <span className="text-[8px] font-orbitron font-black text-cyan-400 tracking-[0.4em] uppercase">Ready to Bind</span>
-                  </div>
-                )}
+                
+                <div className="mt-2 flex items-center justify-center gap-2">
+                  <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${liveDetectedName || loading ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'}`}></div>
+                  <span className={`text-[8px] font-orbitron font-black tracking-[0.4em] uppercase transition-colors duration-300 ${liveDetectedName || loading ? 'text-cyan-400' : 'text-slate-500'}`}>
+                    {loading ? 'Processing' : liveDetectedName ? 'Locked' : 'System Ready'}
+                  </span>
+                </div>
             </div>
+          </div>
+
+          {/* Bottom Prompt - Fades out when card is locked */}
+          <div className={`absolute bottom-12 transition-opacity duration-700 ${!liveDetectedName && !loading ? 'opacity-30' : 'opacity-0'}`}>
+             <span className="text-[10px] font-orbitron font-black text-white tracking-[0.6em] uppercase">Tap anywhere to sync</span>
           </div>
 
           {/* Success Result Overlay */}
           {scanResult && !loading && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm z-40 animate-in fade-in duration-300">
-                  <div className="bg-slate-950 border border-green-500/30 p-8 rounded-[3rem] shadow-[0_0_80px_rgba(34,197,94,0.2)] flex flex-col items-center gap-4 text-center">
-                      <div className="w-16 h-16 bg-green-500 rounded-full flex items-center justify-center">
-                          <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
+              <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-md z-40 animate-in fade-in zoom-in duration-300">
+                  <div className="bg-slate-950 border border-green-500/40 p-10 rounded-[4rem] shadow-[0_0_100px_rgba(34,197,94,0.3)] flex flex-col items-center gap-6 text-center max-w-xs w-full">
+                      <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(34,197,94,0.6)]">
+                          <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
                       </div>
                       <div>
-                        <h2 className="text-2xl font-orbitron font-black text-white uppercase tracking-tighter">{scanResult.name}</h2>
-                        <p className="text-green-400 font-bold text-[10px] tracking-widest uppercase mt-1">Secured: {scanResult.price}</p>
+                        <h2 className="text-3xl font-orbitron font-black text-white uppercase tracking-tighter leading-none">{scanResult.name}</h2>
+                        <p className="text-green-400 font-bold text-[10px] tracking-[0.3em] uppercase mt-3 py-1 px-3 bg-green-400/10 rounded-lg inline-block">{scanResult.price}</p>
                       </div>
                   </div>
               </div>
@@ -192,7 +198,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
           {/* Error Message */}
           {error && (
-              <div className="absolute top-10 left-1/2 -translate-x-1/2 z-[60] bg-red-600/90 backdrop-blur-xl text-white px-8 py-3 rounded-2xl text-[10px] font-orbitron font-black shadow-2xl animate-in slide-in-from-top-10 duration-500">
+              <div className="absolute top-[32%] left-1/2 -translate-x-1/2 z-[60] bg-red-600/90 backdrop-blur-xl text-white px-8 py-3 rounded-2xl text-[10px] font-orbitron font-black shadow-2xl animate-in slide-in-from-top-10 duration-500 uppercase tracking-widest">
                   {error}
               </div>
           )}
