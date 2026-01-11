@@ -18,9 +18,9 @@ interface ScannerProps {
 const TARGET_RATIO = 0.716;
 const RATIO_TOLERANCE = 0.15; 
 const MAX_STABILITY = 40;
-const QUALITY_THRESHOLD = 0.75; // 75% quality trigger
+const QUALITY_THRESHOLD = 0.65; // Snappier trigger: ~65% quality for capture
 
-// Centiskorch 30/132 from Darkness Ablaze - Requested default fallback image
+// Fallback image for failed ID
 const DEFAULT_UNFOUND_IMAGE = "https://images.pokemontcg.io/swsh3/30_hires.png";
 
 const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScanning }) => {
@@ -28,16 +28,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cardCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const lastAIScanTime = useRef<number>(0);
-  const lastLocalOCRTime = useRef<number>(0);
-  const animationFrameRef = useRef<number>(null);
+  // Fixed: Added animationFrameRef to manage requestAnimationFrame lifecycle
+  const animationFrameRef = useRef<number | null>(null);
   
+  const lastAIScanTime = useRef<number>(0);
   const lockStartTimeRef = useRef<number>(0);
   const lockTriggeredRef = useRef<boolean>(false);
   const processedTextHashes = useRef<Set<string>>(new Set());
 
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [detectedData, setDetectedData] = useState<OCRResult | null>(null);
   const [cvReady, setCvReady] = useState(false);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
@@ -47,8 +46,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [visualCorners, setVisualCorners] = useState<CardCorners | null>(null);
   const [viewBox, setViewBox] = useState({ w: 0, h: 0 });
   const [scanResult, setScanResult] = useState<{name: string, price: string} | null>(null);
-  const [isProcessingLocal, setIsProcessingLocal] = useState(false);
   const [stabilityScore, setStabilityScore] = useState(0);
+  const [showShutter, setShowShutter] = useState(false);
   
   const [jitter, setJitter] = useState({ x: 0, y: 0 });
 
@@ -91,29 +90,40 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     } catch (e) {}
   };
 
-  const processAILookup = async (base64: string) => {
+  const processAILookup = async (base64: string, displayUrl: string) => {
     if (isDeepScanning) return;
     setIsDeepScanning(true);
     lastAIScanTime.current = Date.now();
+    
+    // Trigger visual shutter effect
+    setShowShutter(true);
+    setTimeout(() => setShowShutter(false), 300);
+
     try {
       const res = await identifyPokemonCard(base64);
       if (res && res.name && res.name !== "(unfound)") {
-        const hash = `ai_${res.name}_${res.number}`;
+        const hash = `${res.name}_${res.number}_${res.set}`;
         if (!processedTextHashes.current.has(hash)) {
           processedTextHashes.current.add(hash);
+          
+          // AUTO-ADD: "then add the card based on the name to the collection"
           onCardDetected({ 
             ...res, 
             id: Math.random().toString(36).substr(2,9), 
             scanDate: new Date().toLocaleDateString(), 
-            imageUrl: `data:image/jpeg;base64,${base64}` 
+            imageUrl: displayUrl 
           });
+          
           setScanResult({ name: res.name, price: res.marketValue || "--" });
           lockTriggeredRef.current = true;
-          setTimeout(() => setScanResult(null), 3000);
+          setTimeout(() => {
+            setScanResult(null);
+            lockTriggeredRef.current = false;
+          }, 3500);
         }
       }
     } catch (e) {
-      console.error("Deep AI Scan Fail", e);
+      console.error("Behind-the-scenes AI analysis failed", e);
     } finally {
       setIsDeepScanning(false);
     }
@@ -146,7 +156,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       animationFrameRef.current = requestAnimationFrame(anim);
     };
     animationFrameRef.current = requestAnimationFrame(anim);
-    return () => animationFrameRef.current && cancelAnimationFrame(animationFrameRef.current);
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
   }, [targetCorners]);
 
   const validateQuadGeometry = (pts: Point[]): boolean => {
@@ -169,16 +183,19 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     onCardDetected({ 
       id: Math.random().toString(36).substr(2,9), 
       name: "(unfound)", 
-      number: "30/132", 
-      set: "Unidentified Target", 
+      number: "---", 
+      set: "Unidentified Asset", 
       rarity: "Unknown", 
-      type: "Fire", 
+      type: "Normal", 
       marketValue: "$--.--", 
       scanDate: new Date().toLocaleDateString(), 
       imageUrl: DEFAULT_UNFOUND_IMAGE 
     });
     setScanResult({ name: "(unfound)", price: "--" });
-    setTimeout(() => setScanResult(null), 2000);
+    setTimeout(() => {
+        setScanResult(null);
+        lockTriggeredRef.current = false;
+    }, 2000);
   }, [onCardDetected]);
 
   const updateCardWarp = useCallback(() => {
@@ -250,89 +267,41 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         setTargetCorners(found);
         setStabilityScore(s => Math.min(s + 1, MAX_STABILITY));
         
-        if (lockStartTimeRef.current === 0) {
-            lockStartTimeRef.current = Date.now();
-        }
+        if (lockStartTimeRef.current === 0) lockStartTimeRef.current = Date.now();
 
         updateCardWarp();
 
-        // 8-second timeout for "(unfound)"
-        if (stabilityScore > 10 && !lockTriggeredRef.current && !scanResult) {
-            if (Date.now() - lockStartTimeRef.current > 8000) {
-                captureUnfound();
-            }
-        }
-        
-        // CONDITION: after the quality of the card scan is over 75% it takes a picture of the camera, and analyzes it for the name
-        // 75% of MAX_STABILITY (40) is 30.
-        if (stabilityScore >= (MAX_STABILITY * QUALITY_THRESHOLD) && !isDeepScanning && !scanResult && Date.now() - lastAIScanTime.current > 4000) {
-          if (cardCanvasRef.current) {
-            const snapshot = cardCanvasRef.current.toDataURL('image/jpeg', 0.95);
-            processAILookup(snapshot.split(',')[1]);
+        // Automated behind-the-scenes analysis as requested
+        if (stabilityScore >= (MAX_STABILITY * QUALITY_THRESHOLD) && !isDeepScanning && !scanResult && !lockTriggeredRef.current) {
+          if (cardCanvasRef.current && Date.now() - lastAIScanTime.current > 4000) {
+            const highResSnapshot = cardCanvasRef.current.toDataURL('image/jpeg', 0.95);
+            processAILookup(highResSnapshot.split(',')[1], highResSnapshot);
           }
+        }
+
+        // Fallback for completely unrecognizable targets after 8s
+        if (stabilityScore > 10 && !lockTriggeredRef.current && !scanResult) {
+            if (Date.now() - lockStartTimeRef.current > 8000) captureUnfound();
         }
       } else {
         setTargetCorners(null);
         setStabilityScore(s => Math.max(s - 4, 0));
         lockStartTimeRef.current = 0;
-        lockTriggeredRef.current = false;
       }
 
       src.delete(); gray.delete(); blurred.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {
       console.warn("CV Frame Error", e);
     }
-  }, [cvReady, isDeepScanning, scanResult, stabilityScore, captureUnfound, updateCardWarp]);
-
-  const runLocalOCR = useCallback(async () => {
-    if (!cvReady || !targetCorners || isProcessingLocal || scanResult || !cardCanvasRef.current) return;
-    if (Date.now() - lastLocalOCRTime.current < 2000) return;
-    
-    setIsProcessingLocal(true);
-    lastLocalOCRTime.current = Date.now();
-    try {
-      const ocrData = await extractAllCardText(cardCanvasRef.current);
-      if (ocrData && ocrData.fullText.trim().length > 10 && ocrData.name !== "Unidentified Asset") {
-        setDetectedData(ocrData);
-        
-        const textHash = ocrData.fullText.substring(0, 40); 
-        if (!processedTextHashes.current.has(textHash)) {
-          processedTextHashes.current.add(textHash);
-          lockTriggeredRef.current = true;
-
-          onCardDetected({ 
-            id: Math.random().toString(36).substr(2,9), 
-            name: ocrData.name, 
-            number: ocrData.number, 
-            set: "Neural Scan", 
-            rarity: "Detected", 
-            type: "Digital Asset", 
-            marketValue: "$--.--", 
-            scanDate: new Date().toLocaleDateString(), 
-            imageUrl: cardCanvasRef.current.toDataURL() 
-          });
-          
-          setScanResult({ name: ocrData.name, price: "--" });
-          setTimeout(() => setScanResult(null), 2000);
-        }
-      }
-    } catch (e) {
-      console.warn("Local OCR Error", e);
-    } finally {
-      setIsProcessingLocal(false);
-    }
-  }, [cvReady, targetCorners, isProcessingLocal, scanResult, onCardDetected, stabilityScore]);
+  }, [cvReady, isDeepScanning, scanResult, stabilityScore, captureUnfound, updateCardWarp, processAILookup]);
 
   useEffect(() => {
     let int: number;
     if (isScanning && cvReady) {
-      int = window.setInterval(() => {
-        detectCardWithCV();
-        if (targetCorners) runLocalOCR();
-      }, 100);
+      int = window.setInterval(detectCardWithCV, 120);
     }
     return () => clearInterval(int);
-  }, [isScanning, cvReady, targetCorners, detectCardWithCV, runLocalOCR]);
+  }, [isScanning, cvReady, detectCardWithCV]);
 
   const currentQuality = Math.round((stabilityScore / MAX_STABILITY) * 100);
 
@@ -340,6 +309,12 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
+      {/* SHUTTER EFFECT */}
+      {showShutter && (
+        <div className="absolute inset-0 bg-white z-[100] animate-pulse pointer-events-none opacity-40" />
+      )}
+
+      {/* SCANNER OVERLAY */}
       <div className="absolute inset-0 z-20 pointer-events-none">
          {viewBox.w > 0 && visualCorners && (
            <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
@@ -356,7 +331,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               />
 
               <g className="font-orbitron font-black text-[10px] fill-cyan-400 tracking-[0.3em]">
-                <text x={visualCorners.tl.x} y={visualCorners.tl.y - 15}>TARGET_LOCKED</text>
+                <text x={visualCorners.tl.x} y={visualCorners.tl.y - 15}>ASSET_LOCKED</text>
                 <text x={visualCorners.bl.x} y={visualCorners.bl.y + 25}>STABILITY: {currentQuality}%</text>
               </g>
 
@@ -369,7 +344,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
            </svg>
          )}
          <div className="absolute inset-0 border-[50px] border-slate-950/40 pointer-events-none" />
-         <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(34,211,238,0.05)_1.5px,transparent_1.5px)] bg-[size:40px_40px]" />
       </div>
 
       <div className="absolute top-10 left-1/2 -translate-x-1/2 z-50 w-full px-10 flex flex-col items-center">
@@ -378,14 +352,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               <div className="flex items-center justify-center gap-3 mb-2">
                 <div className={`w-2 h-2 rounded-full ${visualCorners ? 'bg-cyan-400 animate-pulse shadow-[0_0_10px_cyan]' : 'bg-slate-700'}`} />
                 <span className="text-[10px] font-orbitron font-black text-cyan-500 tracking-[0.6em] uppercase">
-                  {stabilityScore >= 30 ? 'OPTIMAL_NEURAL_SYNC' : (visualCorners ? 'CALIBRATING_SENSORS' : 'SCANNING_ENVIRONMENT')}
+                  {isDeepScanning ? 'NEURAL_ANALYSIS_IN_PROGRESS' : (visualCorners ? 'DATA_SYNC_ACTIVE' : 'SEEKING_DATA_SIGNALS')}
                 </span>
               </div>
               <h2 className="text-3xl md:text-4xl font-orbitron font-black text-white uppercase tracking-tighter max-w-lg truncate">
-                {detectedData?.name || (isDeepScanning ? 'AI_NEURAL_RECOGNITION...' : (isProcessingLocal ? 'EXTRACTING_TEXT...' : 'POSITION_TARGET'))}
+                {isDeepScanning ? 'DECODING_IMAGE...' : (visualCorners ? 'ASSET_DETECTED' : 'POSITION_TARGET')}
               </h2>
               
-              {/* Quality Bar */}
               {visualCorners && (
                 <div className="mt-4 w-full h-1 bg-slate-800 rounded-full overflow-hidden">
                   <div 
@@ -405,7 +378,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                 <svg className="w-14 h-14 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path></svg>
               </div>
               <div className="text-5xl font-orbitron font-black text-white mb-4 uppercase tracking-tighter">{scanResult.name}</div>
-              <div className="bg-cyan-500 text-slate-950 py-3 px-14 rounded-full font-orbitron font-black uppercase text-xs tracking-[0.3em] inline-block shadow-lg">ASSET_REGISTERED</div>
+              <div className="bg-cyan-500 text-slate-950 py-3 px-14 rounded-full font-orbitron font-black uppercase text-xs tracking-[0.3em] inline-block shadow-lg">VAULT_REGISTRATION_COMPLETE</div>
            </div>
         </div>
       )}
@@ -436,7 +409,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           const file = e.target.files?.[0];
           if (file) {
             const reader = new FileReader();
-            reader.onload = (ev) => processAILookup(ev.target?.result?.toString().split(',')[1] || "");
+            reader.onload = (ev) => {
+                const b64 = ev.target?.result?.toString() || "";
+                processAILookup(b64.split(',')[1], b64);
+            };
             reader.readAsDataURL(file);
           }
       }} />

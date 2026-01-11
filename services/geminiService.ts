@@ -8,13 +8,13 @@ Your primary function is to analyze Pokemon card images and extract high-precisi
 PRECISION PROTOCOLS:
 1. TEXT EXTRACTION: Focus intensely on the card name (top) and the set number/total (bottom corner, e.g., 030/132).
 2. VISUAL MATCHING: Use artwork, colors, and layout to confirm identity even if text is partially obscured.
-3. MARKET SYNC: Retrieve the current TCGPlayer market value.
+3. MARKET SYNC: Retrieve the current TCGPlayer market value using the search tool.
 4. FALLBACK: If the card is completely unidentifiable, return the name as "(unfound)".
 
 OUTPUT: Valid JSON only matching the requested schema. No conversational text.`;
 
-const FLASH_MODEL = 'gemini-3-flash-preview';
-const PRO_MODEL = 'gemini-3-pro-preview';
+// Using the Pro model for high-quality image understanding as requested.
+const PRIMARY_MODEL = 'gemini-3-pro-preview';
 
 const getScannerConfig = () => ({
   systemInstruction: SYSTEM_INSTRUCTION,
@@ -39,11 +39,11 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: FLASH_MODEL,
+      model: PRIMARY_MODEL,
       contents: {
         parts: [
           { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          { text: "SCAN_ASSET: Extract Name, Set Number, and Market Value. Return (unfound) if data is missing." },
+          { text: "SCAN_ASSET: Perform full identification. Extract Name, Set, Number, and current Market Value. Provide a complete JSON object." },
         ],
       },
       config: getScannerConfig() as any,
@@ -54,7 +54,10 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
 
     let result;
     try {
-      result = JSON.parse(response.text?.trim() || "{}");
+      const text = response.text?.trim() || "{}";
+      // Handle potential markdown code blocks in output
+      const jsonStr = text.startsWith('```json') ? text.replace(/^```json/, '').replace(/```$/, '') : text;
+      result = JSON.parse(jsonStr);
     } catch (e) {
       console.error("JSON Parse Error in AI response", e);
       return null;
@@ -72,7 +75,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
       hp: result.hp || "0",
       abilities: [],
       attacks: [],
-      imageUrl: "",
+      imageUrl: "", // To be filled by original scan
       sourceUrl: sourceUrl
     } as IdentificationResult;
   } catch (error) {
@@ -85,7 +88,7 @@ export const manualCardLookup = async (query: string): Promise<IdentificationRes
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: PRO_MODEL,
+      model: PRIMARY_MODEL,
       contents: `Look up '${query}'. Provide full TCG data and market value.`,
       config: {
         systemInstruction: "Expert TCG assistant. Return card data and market value in JSON format.",
@@ -128,7 +131,7 @@ export const fetchCardsFromSet = async (setName: string): Promise<Identification
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: FLASH_MODEL,
+      model: PRIMARY_MODEL,
       contents: `List all cards in the Pokémon TCG set: ${setName}.`,
       config: {
         systemInstruction: "Professional archivist. Provide set listings in valid JSON format.",
