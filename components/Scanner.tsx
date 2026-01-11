@@ -23,6 +23,9 @@ const TARGET_REGIONS = {
 const TARGET_RATIO = 0.716;
 const RATIO_TOLERANCE = 0.15; 
 
+// Centiskorch 30/132 from Darkness Ablaze
+const DEFAULT_UNFOUND_IMAGE = "https://images.pokemontcg.io/swsh3/30_hires.png";
+
 const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScanning }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -109,7 +112,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             imageUrl: `data:image/jpeg;base64,${base64}` 
           });
           setScanResult({ name: res.name, price: res.marketValue || "--" });
-          lockTriggeredRef.current = true; // Prevents "unfound" trigger
+          lockTriggeredRef.current = true; // Found text, disable "unfound" trigger
           setTimeout(() => setScanResult(null), 3000);
         }
       }
@@ -169,16 +172,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     
     lockTriggeredRef.current = true; // Ensure single capture per lock
     
+    // As per user request: if unfound, name it "(unfound)" and use Centiskorch 30/132 as default image
     onCardDetected({ 
       id: Math.random().toString(36).substr(2,9), 
       name: "(unfound)", 
-      number: "???", 
-      set: "Visual Capture", 
+      number: "30/132", 
+      set: "Unidentified Set", 
       rarity: "Unknown", 
-      type: "Unknown", 
+      type: "Fire", 
       marketValue: "$--.--", 
       scanDate: new Date().toLocaleDateString(), 
-      imageUrl: cardCanvasRef.current.toDataURL() 
+      imageUrl: DEFAULT_UNFOUND_IMAGE 
     });
     
     setScanResult({ name: "(unfound)", price: "--" });
@@ -187,7 +191,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   /**
    * High-Frequency Perspective Warping
-   * Updates cardCanvasRef with the warped card image for OCR and timeout capture.
+   * Updates cardCanvasRef with the warped card image.
    */
   const updateCardWarp = useCallback(() => {
     if (!cvReady || !targetCorners || !videoRef.current || !cardCanvasRef.current) return;
@@ -263,7 +267,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             lockStartTimeRef.current = Date.now();
         }
 
-        // Warp immediately for sharp image capture
+        // Warp immediately for sharp image capture preview
         updateCardWarp();
 
         // 2-second timeout for "(unfound)"
@@ -301,7 +305,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     setIsProcessingLocal(true);
     lastLocalOCRTime.current = Date.now();
     try {
-      // Use the already-warped canvas for OCR
       const ocrData = await extractAllCardText(cardCanvasRef.current);
       if (ocrData && ocrData.fullText.length > 5) {
         setDetectedData(ocrData);
