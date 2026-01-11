@@ -85,10 +85,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     const anim = () => {
       if (targetCorners) {
         setVisualCorners(p => p ? {
-          tl: { x: lerp(p.tl.x, targetCorners.tl.x, 0.3), y: lerp(p.tl.y, targetCorners.tl.y, 0.3) },
-          tr: { x: lerp(p.tr.x, targetCorners.tr.x, 0.3), y: lerp(p.tr.y, targetCorners.tr.y, 0.3) },
-          bl: { x: lerp(p.bl.x, targetCorners.bl.x, 0.3), y: lerp(p.bl.y, targetCorners.bl.y, 0.3) },
-          br: { x: lerp(p.br.x, targetCorners.br.x, 0.3), y: lerp(p.br.y, targetCorners.br.y, 0.3) }
+          tl: { x: lerp(p.tl.x, targetCorners.tl.x, 0.35), y: lerp(p.tl.y, targetCorners.tl.y, 0.35) },
+          tr: { x: lerp(p.tr.x, targetCorners.tr.x, 0.35), y: lerp(p.tr.y, targetCorners.tr.y, 0.35) },
+          bl: { x: lerp(p.bl.x, targetCorners.bl.x, 0.35), y: lerp(p.bl.y, targetCorners.bl.y, 0.35) },
+          br: { x: lerp(p.br.x, targetCorners.br.x, 0.35), y: lerp(p.br.y, targetCorners.br.y, 0.35) }
         } : targetCorners);
       } else setVisualCorners(null);
       animationFrameRef.current = requestAnimationFrame(anim);
@@ -112,19 +112,18 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let src = cv.imread(c), gray = new cv.Mat(), claheMat = new cv.Mat(), blurred = new cv.Mat(), thresh = new cv.Mat(), edges = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
       
-      // Robust Glare Handling: CLAHE followed by strong blurring to merge high-intensity highlights
-      let clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
+      // EXTREME LIGHT HANDLING: CLAHE + Adaptive Thresholding for border isolation
+      let clahe = new cv.CLAHE(4.0, new cv.Size(8, 8));
       clahe.apply(gray, claheMat);
-      cv.GaussianBlur(claheMat, blurred, new cv.Size(7, 7), 0);
+      cv.GaussianBlur(claheMat, blurred, new cv.Size(9, 9), 0);
       
-      // Multi-step Edge Detection: Canny + Adaptive Threshold
-      cv.Canny(blurred, edges, 50, 150);
-      cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 5);
+      // Use large block size to ignore localized flash hotspots
+      cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, 31, 10);
+      cv.Canny(blurred, edges, 40, 120);
       cv.bitwise_or(thresh, edges, thresh);
       
-      // Dilation to bridge edges potentially broken by flash glare
-      let k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-      cv.dilate(thresh, thresh, k);
+      // Heavy morphology to bridge gaps in borders caused by intense glare
+      let k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
       cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, k);
       
       let contours = new cv.MatVector(), hierarchy = new cv.Mat();
@@ -133,7 +132,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let maxA = 0, found: CardCorners | null = null;
       for (let i = 0; i < contours.size(); ++i) {
         let cnt = contours.get(i), area = cv.contourArea(cnt);
-        if (area > (c.width * c.height * 0.15)) {
+        if (area > (c.width * c.height * 0.12)) {
           let approx = new cv.Mat(), peri = cv.arcLength(cnt, true);
           cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
           if (approx.rows === 4) {
@@ -142,11 +141,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
             const sum = [...pts].sort((a,b) => (a.x+a.y)-(b.x+b.y));
             const diff = [...pts].sort((a,b) => (a.y-a.x)-(b.y-b.x));
             const potential = { tl: sum[0], br: sum[3], tr: diff[0], bl: diff[3] };
-            const w = Math.hypot(potential.tr.x-potential.tl.x, potential.tr.y-potential.tl.y);
-            const h = Math.hypot(potential.bl.x-potential.tl.x, potential.bl.y-potential.tl.y);
-            const ratio = w / h;
-            // standard card ratio ~0.71
-            if (ratio > 0.6 && ratio < 0.85 && area > maxA) { maxA = area; found = potential; }
+            const ratio = Math.hypot(potential.tr.x-potential.tl.x, potential.tr.y-potential.tl.y) / Math.hypot(potential.bl.x-potential.tl.x, potential.bl.y-potential.tl.y);
+            if (ratio > 0.55 && ratio < 0.9 && area > maxA) { maxA = area; found = potential; }
           }
           approx.delete();
         }
@@ -154,19 +150,19 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       }
 
       if (found) { setTargetCorners(found); lastFoundTime.current = Date.now(); }
-      else if (Date.now() - lastFoundTime.current > 400) setTargetCorners(null);
+      else if (Date.now() - lastFoundTime.current > 300) setTargetCorners(null);
 
       src.delete(); gray.delete(); claheMat.delete(); clahe.delete(); blurred.delete(); thresh.delete(); edges.delete(); k.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {}
   }, [cvReady]);
 
   const triggerDeepScan = async () => {
-    if (isDeepScanning || !videoRef.current || !cardCanvasRef.current || Date.now() - lastDeepScanTime.current < 4000) return;
+    if (isDeepScanning || !videoRef.current || !cardCanvasRef.current || Date.now() - lastDeepScanTime.current < 3000) return;
     setIsDeepScanning(true);
     lastDeepScanTime.current = Date.now();
     try {
       const c = cardCanvasRef.current;
-      const b64 = c.toDataURL('image/jpeg', 0.9).split(',')[1];
+      const b64 = c.toDataURL('image/jpeg', 0.95).split(',')[1];
       const res = await identifyPokemonCard(b64);
       if (res && res.name) {
         onCardDetected({ ...res, id: Math.random().toString(36).substr(2,9), scanDate: new Date().toLocaleDateString(), imageUrl: c.toDataURL() });
@@ -186,15 +182,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       let M = cv.getPerspectiveTransform(sc, dc);
       cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
       
-      // OCR PRE-PROCESSING: Convert to grayscale, sharpen, and apply Otsu thresholding
-      cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY);
+      // ADVANCED OCR ENHANCEMENT: Convert, bilateral filter (denoise while preserving edges), and adaptive thresholding
+      let tmp = new cv.Mat();
+      cv.cvtColor(dst, tmp, cv.COLOR_RGBA2GRAY);
       
-      // Sharpening Kernel
-      let kernel = cv.matFromArray(3, 3, cv.CV_32F, [
-        0, -1, 0,
-        -1, 5, -1,
-        0, -1, 0
-      ]);
+      // Bilateral filter for cleaning texture noise without blurring text edges
+      cv.bilateralFilter(tmp, dst, 9, 75, 75);
+      
+      // Final sharpening for Tesseract
+      let kernel = cv.matFromArray(3, 3, cv.CV_32F, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
       cv.filter2D(dst, dst, cv.CV_8U, kernel);
       kernel.delete();
 
@@ -209,17 +205,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           setScanResult({ name: res.name, price: "--" });
           setTimeout(() => setScanResult(null), 1500);
         }
-      } else if (Date.now() - lastFoundTime.current > 1200) {
+      } else if (Date.now() - lastFoundTime.current > 1000) {
         triggerDeepScan();
       }
-      src.delete(); dst.delete(); M.delete(); sc.delete(); dc.delete();
+      src.delete(); dst.delete(); tmp.delete(); M.delete(); sc.delete(); dc.delete();
     } catch (e) {} finally { setIsProcessing(false); }
   };
 
   useEffect(() => {
     let int: number;
     if (isScanning && cvReady && !scanResult) {
-      int = window.setInterval(() => { detectCardWithCV(); if (targetCorners) processFrame(); }, 120);
+      int = window.setInterval(() => { detectCardWithCV(); if (targetCorners) processFrame(); }, 80);
     }
     return () => clearInterval(int);
   }, [isScanning, cvReady, targetCorners, isProcessing, scanResult]);
@@ -228,12 +224,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-80" />
       
-      {/* Simplified Detection HUD */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-4 duration-500">
         <div className="bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-full px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300">
           <div className="flex items-center gap-4">
             <span className="text-xl font-orbitron font-black text-white uppercase tracking-tighter">
-              {detectedData?.name || (isDeepScanning ? 'ANALYZING...' : '---')}
+              {detectedData?.name || (isDeepScanning ? 'SEARCHING ARCHIVES...' : '---')}
             </span>
             {detectedData?.number && (
               <>
@@ -267,7 +262,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       )}
 
       {torchSupported && (
-        <button onClick={toggleTorch} className={`absolute bottom-10 right-10 pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white' : 'bg-slate-900/90 text-slate-400'}`}>
+        <button onClick={toggleTorch} className={`absolute bottom-10 right-10 pointer-events-auto backdrop-blur-xl p-6 rounded-full border border-white/10 shadow-2xl transition-all active:scale-90 ${isTorchOn ? 'bg-amber-400 text-white shadow-[0_0_30px_rgba(251,191,36,0.4)]' : 'bg-slate-900/90 text-slate-400'}`}>
           <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
         </button>
       )}

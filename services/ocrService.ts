@@ -42,16 +42,25 @@ export const initOCRWorker = async () => {
   try {
     worker = await createWorker('eng');
     await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/',
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/ -',
       tessjs_create_hocr: '0',
       tessjs_create_tsv: '0',
-      tessedit_pageseg_mode: '6', 
+      tessedit_pageseg_mode: '11', // Sparse text finding
     });
   } catch (err) {
     console.error("Worker Initialization Failed", err);
   } finally {
     isInitializing = false;
   }
+};
+
+const fixCommonOcrErrors = (text: string) => {
+  return text
+    .replace(/\|/g, 'I')
+    .replace(/0/g, 'O') // Context dependent, but good for name matching
+    .replace(/1/g, 'I')
+    .replace(/5/g, 'S')
+    .replace(/8/g, 'B');
 };
 
 export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
@@ -61,52 +70,50 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
     const w = cardCanvas.width;
     const h = cardCanvas.height;
 
-    // Standard TCG regions for warped 400x560 image
+    // TCG Layout Specific Regions (Optimized for warped 400x560)
     const regions = [
-      { x: w * 0.04, y: h * 0.025, w: w * 0.68, h: h * 0.11 }, // Name Bar (Increased height for multi-line or large fonts)
-      { x: w * 0.02, y: h * 0.86, w: w * 0.48, h: h * 0.12 }  // Number/Set Area
+      { x: w * 0.05, y: h * 0.02, w: w * 0.65, h: h * 0.09 }, // Name
+      { x: w * 0.02, y: h * 0.88, w: w * 0.40, h: h * 0.10 }  // Number
     ];
 
     const scanCanvas = document.createElement('canvas');
     const sCtx = scanCanvas.getContext('2d');
     if (!sCtx) return null;
 
-    const rH = regions[0].h;
-    const pad = 15;
+    const rowH = 60; // Fixed height per row for consistency
     scanCanvas.width = w;
-    scanCanvas.height = (rH + pad) * regions.length;
+    scanCanvas.height = rowH * regions.length;
     sCtx.fillStyle = 'white';
     sCtx.fillRect(0, 0, scanCanvas.width, scanCanvas.height);
 
     regions.forEach((r, i) => {
-      sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, i * (rH + pad), r.w, r.h);
+      sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, i * rowH, r.w, rowH);
     });
 
     const { data } = await worker.recognize(scanCanvas);
     
     let detectedName: string | null = null;
     let detectedNumber: string | null = null;
-    const splitY = scanCanvas.height / 2;
+    const boundaryY = rowH + 5;
 
     for (const word of data.words) {
       const text = word.text.trim();
-      if (text.length < 3) continue;
+      if (text.length < 2) continue;
 
-      const yMid = (word.bbox.y0 + word.bbox.y1) / 2;
+      const y = (word.bbox.y0 + word.bbox.y1) / 2;
 
-      // Identify Name
-      if (!detectedName && yMid < splitY) {
-        // Cleaning name artifacts
+      // Logic: Top Row = Name
+      if (!detectedName && y < boundaryY) {
         const cleanName = text.replace(/[^a-zA-Z]/g, '');
         if (cleanName.length >= 3) {
-          // Priority 1: Exact Match
           const exact = POKEMON_SPECIES.find(s => s.toLowerCase() === cleanName.toLowerCase());
           if (exact) {
             detectedName = exact;
           } else {
-            // Priority 2: Fuzzy Match
+            // Fuzzy match with OCR correction
+            const fixed = fixCommonOcrErrors(cleanName);
             for (const species of POKEMON_SPECIES) {
-              const dist = getLevenshteinDistance(cleanName, species);
+              const dist = getLevenshteinDistance(fixed, species);
               if (dist <= (species.length > 6 ? 2 : 1)) {
                 detectedName = species;
                 break;
@@ -116,10 +123,10 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
         }
       }
 
-      // Identify Card Number
-      if (!detectedNumber && yMid >= splitY) {
-        // Match standard formats: 001/191 or just 001 or PROMO-001
-        const numMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})|(\d{3,4})|([A-Z]{1,2}\d{1,3})/i);
+      // Logic: Bottom Row = Number
+      if (!detectedNumber && y >= boundaryY) {
+        // Match 001/191, SV8-001, 001, etc.
+        const numMatch = text.match(/([A-Z0-9]{1,5}\/\d{1,3})|(\d{3,4})|([A-Z]{1,2}\d{1,3})|(\d{1,3}\/\d{1,3})/i);
         if (numMatch) detectedNumber = numMatch[0];
       }
       
@@ -131,7 +138,7 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
         name: detectedName,
         number: detectedNumber,
         bbox: null,
-        strategyUsed: "TURBO_PRECISION_CROP"
+        strategyUsed: "INSTANT_NEURAL_CROP"
       };
     }
     
