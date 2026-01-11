@@ -73,7 +73,10 @@ const generateSetData = (): IdentificationResult[] => {
       hp: existing?.hp || "100",
       imageUrl: `https://images.pokemontcg.io/sv8/${i}_hires.png`,
       abilities: [],
-      attacks: []
+      attacks: [],
+      found: true,
+      marketPrice: 0,
+      currency: "USD"
     });
   }
   
