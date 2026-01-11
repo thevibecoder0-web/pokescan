@@ -42,9 +42,11 @@ const initWorker = async () => {
 
 /**
  * Optimized Search Logic:
- * 1. PRIMARY: Top-Left (Name) + Bottom-Left (Number)
- * 2. ALTERNATE: Top-Left (Name) + Bottom-Right (Number)
- * 3. GLOBAL: Full Scan (Strictly checking spatial coordinates)
+ * 1. STANDARD: Top (Name) + Bottom Left (Number)
+ * 2. ALTERNATE: Top (Name) + Bottom Right (Classic/Japanese/Promos)
+ * 3. GLOBAL: Full Scan (Search everywhere)
+ * 
+ * To auto-add, we MUST find both Name AND Number.
  */
 export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise<OCRResult | null> => {
   try {
@@ -52,27 +54,25 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
     const w = cardCanvas.width;
     const h = cardCanvas.height;
 
-    // HP is typically at top-right (x > 70%, y < 15%). 
-    // Card numbers are typically at bottom (y > 75%).
     const strategies = [
       { 
         name: "PRIMARY_LOCK", 
         regions: [
-          { x: 0, y: 0, w: w * 0.7, h: h * 0.15 }, // Name bar (Exclude top-right HP area)
-          { x: 0, y: h * 0.8, w: w * 0.45, h: h * 0.2 } // Bottom-left number
+          { x: 0, y: 0, w, h: h * 0.18 }, // Name bar
+          { x: 0, y: h * 0.82, w: w * 0.4, h: h * 0.18 } // Bottom-left number
         ] 
       },
       { 
         name: "ALT_LOCK", 
         regions: [
-          { x: 0, y: 0, w: w * 0.7, h: h * 0.15 }, // Name bar
-          { x: w * 0.55, y: h * 0.8, w: w * 0.45, h: h * 0.2 } // Bottom-right number
+          { x: 0, y: 0, w, h: h * 0.18 }, // Name bar
+          { x: w * 0.6, y: h * 0.82, w: w * 0.4, h: h * 0.18 } // Bottom-right number
         ] 
       },
       { 
         name: "FULL_SWEEP", 
         regions: [
-          { x: 0, y: 0, w, h } // Full Card (Will use spatial filtering)
+          { x: 0, y: 0, w, h } // Full Card
         ] 
       }
     ];
@@ -86,10 +86,10 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
       scanCanvas.width = w;
       scanCanvas.height = totalH;
 
-      let currentYOffset = 0;
+      let currentY = 0;
       for (const r of strategy.regions) {
-        sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, currentYOffset, r.w, r.h);
-        currentYOffset += r.h;
+        sCtx.drawImage(cardCanvas, r.x, r.y, r.w, r.h, 0, currentY, r.w, r.h);
+        currentY += r.h;
       }
 
       const { data } = await worker.recognize(scanCanvas);
@@ -98,72 +98,33 @@ export const extractNameLocally = async (cardCanvas: HTMLCanvasElement): Promise
       let detectedNumber: string | null = null;
       let nameBbox: any = null;
 
-      // Vertical threshold for the Name region in concatenated canvas
-      const nameRegionHeight = strategy.regions[0].h;
-
+      // Extract text patterns
       for (const word of data.words) {
         const text = word.text.trim();
-        const yCenter = (word.bbox.y0 + word.bbox.y1) / 2;
-        const xCenter = (word.bbox.x0 + word.bbox.x1) / 2;
-
-        // CARD NUMBER LOGIC
+        
+        // Card number pattern (e.g. 123/191, 045, SV036)
         if (!detectedNumber) {
-          // Priority pattern: XXX/XXX
-          const slashMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})/i);
-          // Fallback pattern: standalone 3-4 digits
-          const standaloneMatch = text.match(/\b\d{3,4}\b/);
-          
-          const potentialNum = slashMatch?.[0] || standaloneMatch?.[0];
-
-          if (potentialNum) {
-            let isValidPos = false;
-            if (strategy.name === "FULL_SWEEP") {
-              // In full sweep, number MUST be in the bottom 25% of the card
-              if (yCenter > h * 0.75) isValidPos = true;
-            } else {
-              // In targeted strategies, the number is in the second concatenated region
-              if (yCenter > nameRegionHeight) isValidPos = true;
-            }
-
-            if (isValidPos) {
-              // One final check: HP is usually near the word "HP"
-              const isHP = data.text.toLowerCase().includes(potentialNum.toLowerCase() + " hp") || 
-                           data.text.toLowerCase().includes("hp " + potentialNum.toLowerCase());
-              
-              if (!isHP) {
-                detectedNumber = potentialNum;
-              }
-            }
-          }
+          const numMatch = text.match(/([A-Z0-9-]{1,6}\/\d{1,3})|(\b\d{3,4}\b)/i);
+          if (numMatch) detectedNumber = numMatch[0];
         }
 
-        // POKEMON NAME LOGIC
+        // Pokemon Name pattern
         if (!detectedName) {
-          let isValidNamePos = false;
-          if (strategy.name === "FULL_SWEEP") {
-            // Name is in top 20% and usually on the left/center
-            if (yCenter < h * 0.2 && xCenter < w * 0.8) isValidNamePos = true;
-          } else {
-            // Name is in first concatenated region
-            if (yCenter < nameRegionHeight) isValidNamePos = true;
-          }
-
-          if (isValidNamePos) {
-            const cleanWord = text.replace(/[^a-zA-Z]/g, '');
-            if (cleanWord.length >= 3) {
-              for (const species of POKEMON_SPECIES) {
-                const dist = getLevenshteinDistance(cleanWord, species);
-                if (dist <= (species.length > 5 ? 2 : 1)) {
-                  detectedName = species;
-                  nameBbox = word.bbox;
-                  break;
-                }
+          const cleanWord = text.replace(/[^a-zA-Z]/g, '');
+          if (cleanWord.length >= 3) {
+            for (const species of POKEMON_SPECIES) {
+              const dist = getLevenshteinDistance(cleanWord, species);
+              if (dist <= (species.length > 5 ? 2 : 1)) {
+                detectedName = species;
+                nameBbox = word.bbox;
+                break;
               }
             }
           }
         }
       }
 
+      // STRICT CONDITION: Both name and number are mandatory for a strategy to succeed.
       if (detectedName && detectedNumber) {
         return {
           name: detectedName,
