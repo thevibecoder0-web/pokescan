@@ -80,7 +80,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   /**
    * INTERPOLATION ENGINE: Linear Interpolation for Smooth HUD Motion
-   * Runs at 60fps independent of the 4Hz detection cycle.
+   * Runs at 60fps independent of the 16Hz detection cycle.
    */
   useEffect(() => {
     const lerp = (start: number, end: number, factor: number) => start + (end - start) * factor;
@@ -89,7 +89,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       if (targetCorners) {
         setVisualCorners(prev => {
           if (!prev) return targetCorners;
-          const factor = 0.15; // Smoothness factor (0.1 - 0.2 is ideal)
+          // factor 0.2 provides slightly faster response for 16Hz updates while remaining smooth
+          const factor = 0.2; 
           return {
             tl: { x: lerp(prev.tl.x, targetCorners.tl.x, factor), y: lerp(prev.tl.y, targetCorners.tl.y, factor) },
             tr: { x: lerp(prev.tr.x, targetCorners.tr.x, factor), y: lerp(prev.tr.y, targetCorners.tr.y, factor) },
@@ -119,7 +120,6 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   /**
    * COMPUTER VISION: Discrete Detection Snap
-   * Runs at a lower frequency to minimize jitter in logical data.
    */
   const detectCardWithCV = useCallback(() => {
     if (!cvReady || !videoRef.current || !canvasRef.current) return; 
@@ -237,17 +237,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   };
 
   /**
-   * STABLE SCAN LOOP: 4Hz (250ms)
-   * Low logical frequency, high-fidelity OCR, interpolated visuals.
+   * HYPER-SMOOTH SCAN LOOP: 16Hz (approx 62ms)
+   * High frequency snaps with 60FPS visual smoothing.
    */
   useEffect(() => {
     let interval: number;
     if (isScanning && cvReady && !scanResult) {
       interval = window.setInterval(async () => {
-        // Step 1: Trigger discrete logical snap
+        // Step 1: Trigger high-frequency logical snap
         detectCardWithCV();
 
-        // Step 2: Extract data if locked
+        // Step 2: Attempt extraction (OCR logic handles its own async bottleneck)
         if (targetCorners && !isProcessing) {
           setIsProcessing(true);
           const video = videoRef.current!;
@@ -278,7 +278,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           }
           setIsProcessing(false);
         }
-      }, 250); // 4 times per second
+      }, 62); // 16 times per second (1000/16 = 62.5ms)
     }
     return () => clearInterval(interval);
   }, [isScanning, cvReady, targetCorners, isProcessing, scanResult]);
@@ -307,7 +307,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
           >
              <div className="flex gap-2">
                 <span className={`px-5 py-2.5 text-[14px] font-orbitron font-black uppercase rounded-xl shadow-2xl backdrop-blur-md ${detectedData?.name ? 'bg-cyan-400 text-black' : 'bg-slate-900/90 text-slate-500 border border-white/10'}`}>
-                  {detectedData?.name || 'SMOOTH_SAMPLING...'}
+                  {detectedData?.name || 'SYNC_SAMPLING...'}
                 </span>
              </div>
              {detectedData?.number && (
@@ -319,7 +319,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         </div>
       )}
 
-      {/* Immediate Success Notification */}
+      {/* Success Notification */}
       <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-50">
         {scanResult && (
            <div className="bg-slate-900/98 backdrop-blur-3xl border-4 border-cyan-500/50 p-16 rounded-[4rem] shadow-[0_0_150px_rgba(34,211,238,0.3)] animate-in zoom-in-95 duration-200 text-center relative overflow-hidden">
@@ -329,7 +329,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               <div className="relative z-10">
                 <div className="text-4xl font-orbitron font-black text-white mb-2 uppercase tracking-tighter drop-shadow-2xl">{scanResult.name}</div>
                 <div className="bg-cyan-500/20 text-cyan-400 py-2 px-8 rounded-full border border-cyan-500/30 inline-block">
-                    <span className="text-[10px] font-orbitron font-black uppercase tracking-[0.4em]">VAULT_SYNCED</span>
+                    <span className="text-[10px] font-orbitron font-black uppercase tracking-[0.4em]">VAULT_SECURED</span>
                 </div>
               </div>
            </div>
@@ -342,17 +342,17 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
            <div className="flex items-center gap-4 mb-4">
              <div className="w-3 h-3 rounded-full bg-cyan-500 animate-pulse"></div>
              <span className="text-[11px] font-orbitron font-black text-white uppercase tracking-widest">
-                4Hz_SMOOTH_SYNC
+                16Hz_ULTRA_SMOOTH
              </span>
            </div>
            <div className="space-y-1">
              <div className="flex justify-between items-center">
                 <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Logic Frequency:</span>
-                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">250ms_DISCRETE</span>
+                <span className="text-[8px] text-cyan-400 font-black uppercase tracking-tight">62ms_DISCRETE</span>
              </div>
              <div className="flex justify-between items-center">
-                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Interpolation:</span>
-                <span className="text-[8px] text-green-400 font-black uppercase tracking-tight">60FPS_ACTIVE</span>
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Visual Interpolation:</span>
+                <span className="text-[8px] text-green-400 font-black uppercase tracking-tight">60FPS_LOCKED</span>
              </div>
            </div>
         </div>
