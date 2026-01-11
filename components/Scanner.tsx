@@ -16,15 +16,14 @@ interface ScannerProps {
 }
 
 const SCAN_STATUS_MESSAGES = [
-  "LOCKING PERSPECTIVE...",
-  "EXTRACTING TEXTURE...",
-  "ISOLATING NAME BAR...",
-  "NEURAL CHARACTER MATCH...",
-  "QUERYING ARCHIVES...",
-  "FETCHING MARKET DATA..."
+  "LOCKED_SIGNAL: REFINING BOUNDARIES...",
+  "EXTRACTING HIGH-RES TEXTURE...",
+  "ISOLATING NAME_SECTOR...",
+  "NEURAL CHARACTER MATCHING...",
+  "QUERYING GLOBAL ARCHIVES...",
+  "RETRIEVING MARKET_VALUE..."
 ];
 
-// Target regions derived from ocrService.ts logic for a 400x560 canvas
 const TARGET_REGIONS = {
   name: { x: '5%', y: '2%', w: '65%', h: '9%' },
   number: { x: '2%', y: '88%', w: '40%', h: '10%' }
@@ -164,31 +163,29 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   useEffect(() => {
     const lerp = (s: number, e: number, f: number) => s + (e - s) * f;
     const anim = () => {
-      // While frozen, we do NOT adjust visual corners or viewBox to ensure a completely static "locked" view
-      if (!isFrozen) {
-        if (targetCorners) {
-          setVisualCorners(p => p ? {
-            tl: { x: lerp(p.tl.x, targetCorners.tl.x, 0.35), y: lerp(p.tl.y, targetCorners.tl.y, 0.35) },
-            tr: { x: lerp(p.tr.x, targetCorners.tr.x, 0.35), y: lerp(p.tr.y, targetCorners.tr.y, 0.35) },
-            bl: { x: lerp(p.bl.x, targetCorners.bl.x, 0.35), y: lerp(p.bl.y, targetCorners.bl.y, 0.35) },
-            br: { x: lerp(p.br.x, targetCorners.br.x, 0.35), y: lerp(p.br.y, targetCorners.br.y, 0.35) }
-          } : targetCorners);
-          setShowWarped(true);
-        } else {
-          setVisualCorners(null);
-          setShowWarped(false);
-        }
+      // Keep lerping even when frozen to allow the "border adjustment" animation to finish smoothly on the still frame
+      if (targetCorners) {
+        setVisualCorners(p => p ? {
+          tl: { x: lerp(p.tl.x, targetCorners.tl.x, 0.2), y: lerp(p.tl.y, targetCorners.tl.y, 0.2) },
+          tr: { x: lerp(p.tr.x, targetCorners.tr.x, 0.2), y: lerp(p.tr.y, targetCorners.tr.y, 0.2) },
+          bl: { x: lerp(p.bl.x, targetCorners.bl.x, 0.2), y: lerp(p.bl.y, targetCorners.bl.y, 0.2) },
+          br: { x: lerp(p.br.x, targetCorners.br.x, 0.2), y: lerp(p.br.y, targetCorners.br.y, 0.2) }
+        } : targetCorners);
+        setShowWarped(true);
+      } else {
+        setVisualCorners(null);
+        setShowWarped(false);
       }
       animationFrameRef.current = requestAnimationFrame(anim);
     };
     animationFrameRef.current = requestAnimationFrame(anim);
     return () => animationFrameRef.current && cancelAnimationFrame(animationFrameRef.current);
-  }, [targetCorners, isFrozen]);
+  }, [targetCorners]);
 
   useEffect(() => {
     let timer: number;
     if (isFrozen) {
-      if (videoRef.current) videoRef.current.pause(); // Visual freeze of the background stream
+      if (videoRef.current) videoRef.current.pause(); 
       timer = window.setInterval(() => {
         const elapsed = (Date.now() - freezeStartTimeRef.current) / 1000;
         const isUpload = !!fileInputRef.current?.value;
@@ -217,16 +214,21 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     return () => clearInterval(timer);
   }, [isFrozen, scanResult]);
 
-  const detectCardWithCV = useCallback(() => {
-    if (!cvReady || !videoRef.current || !canvasRef.current || isFrozen) return;
-    const v = videoRef.current;
+  const detectCardWithCV = useCallback((sourceOverride?: any) => {
+    if (!cvReady || (!sourceOverride && !videoRef.current) || !canvasRef.current) return;
+    const v = sourceOverride || videoRef.current;
     const c = canvasRef.current;
     const ctx = c.getContext('2d', { alpha: false });
     if (!ctx) return;
 
-    c.width = v.videoWidth / 2;
-    c.height = v.videoHeight / 2;
-    ctx.drawImage(v, 0, 0, c.width, c.height);
+    // Drawing from either video element or Mat
+    if (sourceOverride && sourceOverride.cols) {
+       cv.imshow(c, sourceOverride);
+    } else {
+       c.width = v.videoWidth / 2;
+       c.height = v.videoHeight / 2;
+       ctx.drawImage(v, 0, 0, c.width, c.height);
+    }
 
     try {
       let src = cv.imread(c), gray = new cv.Mat(), claheMat = new cv.Mat(), blurred = new cv.Mat(), thresh = new cv.Mat(), edges = new cv.Mat();
@@ -270,12 +272,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         setTargetCorners(found); 
         lockedCornersRef.current = found;
         lastFoundTime.current = Date.now();
-        setIsFrozen(true);
-        setFreezeCountdown(5);
-        freezeStartTimeRef.current = Date.now();
-        frozenFrameRef.current = cv.imread(v);
+        if (!isFrozen) {
+           setIsFrozen(true);
+           setFreezeCountdown(5);
+           freezeStartTimeRef.current = Date.now();
+           frozenFrameRef.current = cv.imread(videoRef.current);
+        }
+      } else if (!isFrozen && Date.now() - lastFoundTime.current > 300) {
+        setTargetCorners(null);
       }
-      else if (Date.now() - lastFoundTime.current > 300) setTargetCorners(null);
 
       src.delete(); gray.delete(); claheMat.delete(); clahe.delete(); blurred.delete(); thresh.delete(); edges.delete(); k.delete(); contours.delete(); hierarchy.delete();
     } catch (e) {}
@@ -304,7 +309,8 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const processFrame = async () => {
     if (fileInputRef.current?.value) return;
 
-    const corners = lockedCornersRef.current || targetCorners;
+    // Use current corners even if adjusting
+    const corners = targetCorners || lockedCornersRef.current;
     if (!corners || !cvReady || isProcessing) return;
     setIsProcessing(true);
     try {
@@ -345,7 +351,13 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     let int: number;
     if (isScanning && cvReady && !scanResult) {
       int = window.setInterval(() => { 
-        if (!isFrozen) detectCardWithCV(); 
+        // If frozen, continue to adjust border based on the static high-res Mat
+        if (isFrozen && frozenFrameRef.current) {
+           detectCardWithCV(frozenFrameRef.current);
+        } else if (!isFrozen) {
+           detectCardWithCV(); 
+        }
+        
         if ((targetCorners || isFrozen) && !fileInputRef.current?.value) processFrame(); 
       }, 80);
     }
@@ -354,6 +366,21 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex flex-col">
+      {/* Visual Tracking Overlay (Raw perspective) */}
+      {!showWarped && visualCorners && viewBox.w > 0 && (
+         <div className="absolute inset-0 z-20 pointer-events-none">
+           <svg className="w-full h-full" viewBox={`0 0 ${viewBox.w} ${viewBox.h}`} preserveAspectRatio="xMidYMid slice">
+              <path 
+                d={`M ${visualCorners.tl.x} ${visualCorners.tl.y} L ${visualCorners.tr.x} ${visualCorners.tr.y} L ${visualCorners.br.x} ${visualCorners.br.y} L ${visualCorners.bl.x} ${visualCorners.bl.y} Z`} 
+                className="fill-cyan-400/10 stroke-[6px] stroke-cyan-400 animate-pulse" 
+              />
+              {[visualCorners.tl, visualCorners.tr, visualCorners.bl, visualCorners.br].map((p, i) => (
+                <circle key={i} cx={p.x} cy={p.y} r="12" className="fill-white stroke-cyan-400 stroke-2" />
+              ))}
+           </svg>
+      </div>
+      )}
+
       <video 
         ref={videoRef} 
         autoPlay 
@@ -373,11 +400,10 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               {isFrozen && (
                 <div className="absolute inset-0 pointer-events-none z-30">
                   <div className="relative w-full h-full flex items-center justify-center">
-                    {/* We must wrap the boxes in a container that matches the object-contain aspect ratio of the canvas */}
                     <div className="relative aspect-[400/560] h-full max-h-full">
                       {/* Name Search Box */}
                       <div 
-                        className="absolute border-2 border-cyan-400/60 bg-cyan-400/5 rounded shadow-[0_0_15px_rgba(34,211,238,0.4)] transition-opacity duration-300"
+                        className="absolute border-2 border-cyan-400/80 bg-cyan-400/10 rounded shadow-[0_0_20px_rgba(34,211,238,0.6)] animate-pulse transition-all duration-300"
                         style={{ 
                           left: TARGET_REGIONS.name.x, 
                           top: TARGET_REGIONS.name.y, 
@@ -385,13 +411,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                           height: TARGET_REGIONS.name.h 
                         }}
                       >
-                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-1 -translate-y-full">NAME_SECTOR</div>
-                        <div className="absolute inset-0 animate-pulse bg-cyan-400/10"></div>
+                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-2 py-0.5 -translate-y-full border border-cyan-400/30">NAME_SECTOR</div>
+                        <div className="absolute inset-0 flex items-center justify-center overflow-hidden">
+                           <div className="w-full h-[1px] bg-cyan-400/40 animate-scanline" />
+                        </div>
                       </div>
 
                       {/* Number Search Box */}
                       <div 
-                        className="absolute border-2 border-cyan-400/60 bg-cyan-400/5 rounded shadow-[0_0_15px_rgba(34,211,238,0.4)] transition-opacity duration-300"
+                        className="absolute border-2 border-cyan-400/80 bg-cyan-400/10 rounded shadow-[0_0_20px_rgba(34,211,238,0.6)] animate-pulse transition-all duration-300"
                         style={{ 
                           left: TARGET_REGIONS.number.x, 
                           top: TARGET_REGIONS.number.y, 
@@ -399,12 +427,15 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                           height: TARGET_REGIONS.number.h 
                         }}
                       >
-                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-1 -translate-y-full">SET_NUM_SECTOR</div>
-                        <div className="absolute inset-0 animate-pulse bg-cyan-400/10"></div>
+                        <div className="absolute top-0 left-0 text-[8px] font-orbitron font-black text-cyan-400 bg-slate-950 px-2 py-0.5 -translate-y-full border border-cyan-400/30">ID_SECTOR</div>
+                        <div className="absolute inset-0 flex items-center justify-center overflow-hidden">
+                           <div className="w-full h-[1px] bg-cyan-400/40 animate-scanline" />
+                        </div>
                       </div>
 
                       {/* Card Outline confirmation */}
-                      <div className="absolute inset-0 border-2 border-cyan-400 animate-pulse rounded-3xl opacity-30"></div>
+                      <div className="absolute inset-0 border-4 border-cyan-400 animate-pulse rounded-3xl opacity-40"></div>
+                      <div className="absolute -inset-4 border border-cyan-400/20 rounded-[2.5rem] pointer-events-none"></div>
                     </div>
                   </div>
                 </div>
@@ -413,7 +444,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               {isFrozen && (
                 <div className="absolute inset-0 overflow-hidden rounded-3xl pointer-events-none z-20">
                    <div className="absolute w-full h-[3px] bg-cyan-400 shadow-[0_0_20px_rgba(34,211,238,1)] animate-scanline-sweep" />
-                   <div className="absolute inset-0 bg-cyan-400/5" />
+                   <div className="absolute inset-0 bg-cyan-400/10" />
                 </div>
               )}
             </div>
@@ -433,7 +464,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
                   <div className="bg-slate-900/90 border border-cyan-400/30 px-8 py-3 rounded-full flex flex-col items-center gap-1 shadow-2xl">
                      <div className="flex items-center gap-3">
                         <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                        <span className="text-[10px] font-orbitron font-black text-white uppercase tracking-[0.2em]">
+                        <span className="text-[10px] font-orbitron font-black text-white uppercase tracking-[0.2em] whitespace-nowrap">
                            {SCAN_STATUS_MESSAGES[statusIdx]}
                         </span>
                      </div>
@@ -447,7 +478,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         <div className={`bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-full px-8 py-4 shadow-2xl flex items-center gap-6 transition-all duration-300 ${isFrozen ? 'border-cyan-400/50 ring-2 ring-cyan-400/20' : ''}`}>
           <div className="flex items-center gap-4">
             <span className="text-xl font-orbitron font-black text-white uppercase tracking-tighter">
-              {detectedData?.name || (isDeepScanning ? 'UPLOADING ARCHIVES...' : (isFrozen ? 'NEURAL LOCK' : '---'))}
+              {detectedData?.name || (isDeepScanning ? 'SEARCHING ARCHIVES...' : (isFrozen ? 'SIGNAL LOCKED' : 'AWAITING ASSET...'))}
             </span>
             {detectedData?.number && (
               <>
