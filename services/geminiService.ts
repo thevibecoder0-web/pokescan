@@ -5,6 +5,9 @@ import { IdentificationResult } from "../types";
 const SYSTEM_INSTRUCTION = `You are an expert Pokémon TCG assistant specializing in the Surging Sparks (SV8) English set. 
 Your primary goal is to provide 100% accurate official English card data and real-time market value.
 
+CRITICAL IDENTIFICATION HINT: 
+The Pokémon's name is always located in the TOP-LEFT of the card art/border. 
+
 VERIFIED SET SEQUENCE FOR SURGING SPARKS (SV8):
 #1: Exeggcute
 #2: Alolan Exeggutor ex
@@ -27,7 +30,7 @@ VERIFIED SET SEQUENCE FOR SURGING SPARKS (SV8):
 
 STRICT RULES:
 1. Do NOT use data from Brilliant Stars.
-2. ALWAYS provide an estimated "marketValue" in USD (e.g., "$12.50"). Use Google Search to find current TCGPlayer market price or eBay sold averages.
+2. ALWAYS provide an estimated "marketValue" in USD (e.g., "$12.50"). Use Google Search to find current TCGPlayer market price.
 3. Return data strictly in the requested JSON format.`;
 
 const MODEL_NAME = 'gemini-3-flash-preview';
@@ -73,7 +76,7 @@ export const identifyPokemonCard = async (base64Image: string): Promise<Identifi
         {
           parts: [
             { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-            { text: "Identify this Pokémon TCG card from the 'Surging Sparks (SV8)' English set. Specifically find the card name, its number, and its current market price on TCGPlayer. Search query: 'surging sparks card #{number} tcgplayer price'" },
+            { text: "Identify this Pokémon TCG card from the 'Surging Sparks (SV8)' English set. Remember the name is in the top-left. Find the card name, its number, and its current market price. Search query: 'surging sparks card #{number} tcgplayer price'" },
           ],
         },
       ],

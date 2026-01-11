@@ -15,6 +15,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [detectedName, setDetectedName] = useState<string | null>(null);
 
   const startCamera = async () => {
     try {
@@ -53,6 +54,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
     if (!videoRef.current || !canvasRef.current || loading) return;
 
     setLoading(true);
+    setDetectedName(null);
     const canvas = canvasRef.current;
     const video = videoRef.current;
     const context = canvas.getContext('2d');
@@ -64,18 +66,21 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
       
       const fullResImage = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
       
-      const previewCanvas = document.createElement('canvas');
-      previewCanvas.width = 600;
-      previewCanvas.height = 840;
-      const previewCtx = previewCanvas.getContext('2d');
-      if (previewCtx) {
-        previewCtx.drawImage(video, 0, 0, previewCanvas.width, previewCanvas.height);
-      }
-      const actualPhotoUrl = previewCanvas.toDataURL('image/jpeg', 0.8);
-
       const result = await identifyPokemonCard(fullResImage);
 
       if (result && result.name && result.name.toLowerCase() !== 'unknown') {
+        setDetectedName(result.name);
+        
+        // Prepare preview image
+        const previewCanvas = document.createElement('canvas');
+        previewCanvas.width = 600;
+        previewCanvas.height = 840;
+        const previewCtx = previewCanvas.getContext('2d');
+        if (previewCtx) {
+          previewCtx.drawImage(video, 0, 0, previewCanvas.width, previewCanvas.height);
+        }
+        const actualPhotoUrl = previewCanvas.toDataURL('image/jpeg', 0.8);
+
         const newCard: PokemonCard = {
           id: Math.random().toString(36).substr(2, 9),
           ...result,
@@ -84,7 +89,7 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
         };
         onCardDetected(newCard);
       } else {
-        setError("Card not recognized. Hold steady and try again.");
+        setError("Card not recognized.");
         setTimeout(() => setError(null), 3000);
       }
     }
@@ -113,15 +118,23 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isScanning, setIsScan
               <div className={`relative w-[70%] sm:w-[35%] aspect-[2.5/3.5] border-2 transition-all duration-300 rounded-3xl ${
                   loading ? 'border-yellow-400 scale-105 shadow-[0_0_50px_rgba(250,204,21,0.5)]' : 'border-white/20 shadow-[0_0_30px_rgba(255,255,255,0.1)]'
               }`}>
+                {/* Frame Corners */}
                 <div className="absolute -top-1 -left-1 w-10 h-10 border-t-4 border-l-4 border-white rounded-tl-2xl"></div>
                 <div className="absolute -top-1 -right-1 w-10 h-10 border-t-4 border-r-4 border-white rounded-tr-2xl"></div>
                 <div className="absolute -bottom-1 -left-1 w-10 h-10 border-b-4 border-l-4 border-white rounded-bl-2xl"></div>
                 <div className="absolute -bottom-1 -right-1 w-10 h-10 border-b-4 border-r-4 border-white rounded-br-2xl"></div>
                 
-                <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-slate-950/90 backdrop-blur-xl px-5 py-2 rounded-full border border-white/20 whitespace-nowrap shadow-2xl">
-                  <span className="text-[11px] font-orbitron font-bold uppercase tracking-[0.2em] text-white">
-                    {loading ? 'Analyzing Value & Data...' : 'Position Card Inside Frame'}
+                {/* Top-Left Label (Target area for Card Name) */}
+                <div className="absolute -top-10 left-0 bg-slate-950/90 backdrop-blur-xl px-4 py-1.5 rounded-lg border border-white/20 whitespace-nowrap shadow-2xl flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : 'bg-red-600'}`}></div>
+                  <span className="text-[10px] font-orbitron font-bold uppercase tracking-[0.1em] text-white">
+                    {loading ? 'Analyzing...' : (detectedName || 'Position Card')}
                   </span>
+                </div>
+
+                {/* Bottom-Left Version Info */}
+                <div className="absolute -bottom-10 left-0 text-[9px] font-orbitron font-bold text-slate-500 uppercase tracking-widest px-1">
+                   SV8 v1.0.4 - DEV BUILD
                 </div>
               </div>
             </div>
