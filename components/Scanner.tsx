@@ -5,15 +5,17 @@ import { PokemonCard } from '../types';
 
 interface ScannerProps {
   onCardDetected: (card: Partial<PokemonCard>) => void;
+  onScanError: (error: any) => void;
   isProcessing: boolean;
   setIsProcessing: (val: boolean) => void;
 }
 
-const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isProcessing, setIsProcessing }) => {
+const Scanner: React.FC<ScannerProps> = ({ onCardDetected, onScanError, isProcessing, setIsProcessing }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const lastCaptureTime = useRef<number>(0);
+  const quotaDelayRef = useRef<number>(0);
 
   useEffect(() => {
     const startCamera = async () => {
@@ -34,9 +36,11 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isProcessing, setIsPr
   const captureAndAnalyze = useCallback(async () => {
     if (isProcessing || !videoRef.current || !canvasRef.current) return;
     
-    // Rate limit auto-capture to ensure quality frames
     const now = Date.now();
-    if (now - lastCaptureTime.current < 2000) return; 
+    // Dynamically adjust interval if we hit quota recently
+    const minInterval = quotaDelayRef.current > now ? 8000 : 3000; 
+    
+    if (now - lastCaptureTime.current < minInterval) return; 
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -59,19 +63,24 @@ const Scanner: React.FC<ScannerProps> = ({ onCardDetected, isProcessing, setIsPr
           number: result.number,
           rarity: result.rarity,
           marketPrice: result.marketPrice,
-          imageUrl: result.imageUrl, // Standardized property name
+          imageUrl: result.imageUrl,
           type: result.type,
           hp: result.hp,
           marketValue: result.marketValue,
           sourceUrl: result.sourceUrl
         });
       }
-    } catch (e) {
-      console.error("Auto-scan failed", e);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
+        // Back off for 15 seconds if quota hit
+        quotaDelayRef.current = Date.now() + 15000;
+      }
+      onScanError(e);
     } finally {
       setIsProcessing(false);
     }
-  }, [isProcessing, onCardDetected, setIsProcessing]);
+  }, [isProcessing, onCardDetected, onScanError, setIsProcessing]);
 
   useEffect(() => {
     const interval = setInterval(captureAndAnalyze, 1000);

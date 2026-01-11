@@ -5,7 +5,7 @@ import { PokemonCard } from './types';
 
 const App: React.FC = () => {
   const [collection, setCollection] = useState<PokemonCard[]>([]);
-  const [notifications, setNotifications] = useState<{id: number, text: string}[]>([]);
+  const [notifications, setNotifications] = useState<{id: number, text: string, type?: 'error' | 'success'}[]>([]);
   const [view, setView] = useState<'scanner' | 'vault'>('scanner');
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -19,21 +19,25 @@ const App: React.FC = () => {
     localStorage.setItem('ultra_vault_collection', JSON.stringify(collection));
   }, [collection]);
 
-  const addNotification = useCallback((text: string) => {
+  const addNotification = useCallback((text: string, type: 'error' | 'success' = 'success') => {
     const id = Date.now();
-    setNotifications(prev => [...prev, { id, text }]);
-    // Use the native Notification API if permitted
+    setNotifications(prev => [...prev, { id, text, type }]);
+    
     if (Notification.permission === "granted") {
-      new Notification("PokéScan Elite", { body: text });
+      new Notification(type === 'error' ? "PokéScan: Engine Error" : "PokéScan Elite", { 
+        body: text,
+        icon: type === 'error' ? '/error-icon.png' : '/success-icon.png'
+      });
     }
+    
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== id));
-    }, 4000);
+    }, type === 'error' ? 6000 : 4000);
   }, []);
 
   // Request browser notification permission
   useEffect(() => {
-    if (Notification.permission !== "granted") {
+    if (Notification.permission !== "granted" && Notification.permission !== "denied") {
       Notification.requestPermission();
     }
   }, []);
@@ -45,14 +49,23 @@ const App: React.FC = () => {
       set: cardData.set || "Unknown Set",
       number: cardData.number || "???",
       rarity: cardData.rarity || "Rare",
-      imageUrl: cardData.imageUrl || "", // This is the online URL from Gemini
+      imageUrl: cardData.imageUrl || "", 
       marketPrice: cardData.marketPrice || 0,
       currency: "USD",
       timestamp: Date.now()
     };
     
     setCollection(prev => [newCard, ...prev]);
-    addNotification(`Scanned: ${newCard.name} - $${newCard.marketPrice.toFixed(2)}`);
+    addNotification(`Asset Registered: ${newCard.name} - $${newCard.marketPrice.toFixed(2)}`);
+  }, [addNotification]);
+
+  const handleScanError = useCallback((error: any) => {
+    const msg = error?.message || String(error);
+    if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
+      addNotification("Neural Engine Saturated (Quota Reached). Retrying momentarily...", "error");
+    } else {
+      addNotification("Neural Sync Interrupted. Check connection.", "error");
+    }
   }, [addNotification]);
 
   const totalValue = useMemo(() => 
@@ -97,6 +110,7 @@ const App: React.FC = () => {
             <div className="flex-1">
               <Scanner 
                 onCardDetected={handleCardDetected} 
+                onScanError={handleScanError}
                 isProcessing={isProcessing} 
                 setIsProcessing={setIsProcessing} 
               />
@@ -108,7 +122,7 @@ const App: React.FC = () => {
                 </div>
                 <div>
                   <h4 className="font-orbitron text-xs font-bold uppercase tracking-widest">Rapid Identification</h4>
-                  <p className="text-[10px] text-slate-500 font-bold uppercase">Average response: &lt; 1.5s</p>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase">Optimized for reliability & accuracy</p>
                 </div>
               </div>
               <div className="text-right">
@@ -135,7 +149,6 @@ const App: React.FC = () => {
                 {collection.map(card => (
                   <div key={card.id} className="group bg-slate-900/40 backdrop-blur-md rounded-[2.5rem] overflow-hidden border border-white/5 transition-all duration-500 hover:shadow-[0_0_40px_rgba(220,38,38,0.1)] hover:-translate-y-2 relative">
                     <div className="aspect-[2.5/3.5] relative bg-black/40 overflow-hidden">
-                      {/* High quality online image used here */}
                       <img 
                         src={card.imageUrl} 
                         className="w-full h-full object-contain transition-transform duration-700 group-hover:scale-110 p-2" 
@@ -191,12 +204,18 @@ const App: React.FC = () => {
       {/* Notifications Portal */}
       <div className="fixed top-28 right-6 z-[100] flex flex-col gap-4 pointer-events-none">
         {notifications.map(n => (
-          <div key={n.id} className="bg-slate-900/98 backdrop-blur-2xl border border-cyan-500/30 px-8 py-6 rounded-[2rem] shadow-[0_20px_60px_rgba(0,0,0,0.5)] animate-in slide-in-from-right-full duration-500 pointer-events-auto flex items-center gap-5 min-w-[320px]">
-            <div className="w-12 h-12 bg-cyan-500 rounded-2xl flex items-center justify-center shadow-[0_0_20px_rgba(6,182,212,0.4)]">
-              <svg className="w-7 h-7 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7" /></svg>
+          <div key={n.id} className={`bg-slate-900/98 backdrop-blur-2xl border ${n.type === 'error' ? 'border-red-500/50' : 'border-cyan-500/30'} px-8 py-6 rounded-[2rem] shadow-[0_20px_60px_rgba(0,0,0,0.5)] animate-in slide-in-from-right-full duration-500 pointer-events-auto flex items-center gap-5 min-w-[320px]`}>
+            <div className={`w-12 h-12 ${n.type === 'error' ? 'bg-red-600' : 'bg-cyan-500'} rounded-2xl flex items-center justify-center shadow-lg`}>
+              {n.type === 'error' ? (
+                <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+              ) : (
+                <svg className="w-7 h-7 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7" /></svg>
+              )}
             </div>
             <div>
-              <p className="text-[10px] text-cyan-400 font-black uppercase tracking-[0.4em] mb-1">Asset Registered</p>
+              <p className={`text-[10px] ${n.type === 'error' ? 'text-red-400' : 'text-cyan-400'} font-black uppercase tracking-[0.4em] mb-1`}>
+                {n.type === 'error' ? 'System Warning' : 'Asset Registered'}
+              </p>
               <p className="text-sm font-orbitron font-bold text-white tracking-tight">{n.text}</p>
             </div>
           </div>
